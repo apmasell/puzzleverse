@@ -1,9 +1,6 @@
 [workspace]
-
 members = [
-    "core",
-    "clientcore",
-    "client",
-    "server",
-    "webclient",
+    'core',
+    'client',
+    'server',
 ]

@@ -5,21 +5,10 @@ can create their own puzzle-driven stories.
 
 It is still in early development and not ready for users.
 
-## Server Setup
-You will need a [PostgrSQL](https://www.postgresql.org/) to run the server.
+To start, the documentation is split up depending on what you are planning to do.
 
-TODO
-
-
-## Developer Setup
-The game is build in Rust. Install the Rust toolchain using
-[rustup](https://rustup.rs/) and the [dependencies for the Amethyst game
-library](https://github.com/amethyst/amethyst#dependencies).
-
-You may want to install the Diesel database interface using:
-
-    cargo install diesel_cli
-
-The build using
-
-    cargo build
+- [Background for Players](background-player.md) for everyone
+- [Background for Realm Writers](background-writer.md) for players who wish to create worlds
+- [Background for Server Administrators](background-admin.md) for groups that wish to run their own server instance
+- [Background for Developers](background-dev.md) for programmers who wish to extend the software
+- [Puzzle Pieces](puzzle-pieces.md) for writers and developers

@@ -1,0 +1,6 @@
+#!/bin/sh
+
+echo DB_URL=postgres://puzzleverse:${DB_PASS}@localhost/puzzleverse 
+echo JWT_SECRET=$(openssl rand -base64 32)
+echo AUTH_URL=....
+echo PKCS12_FILE=/etc/puzzleverse/cert.pfx

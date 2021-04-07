@@ -1,1 +1,9 @@
+*.bak
+*.swp
+*~
+.env
+.idea
+server/client*
+server/puzzleverse-client*
+server/snippets
 target
