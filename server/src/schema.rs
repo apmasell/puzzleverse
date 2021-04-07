@@ -107,14 +107,14 @@ joinable!(realmchat -> realm (realm));
 joinable!(remoteplayerchat -> player (player));
 
 allow_tables_to_appear_in_same_query!(
-    authotp,
-    bookmark,
-    localplayerchat,
-    player,
-    publickey,
-    realm,
-    realmchat,
-    realmtrain,
-    remoteplayerchat,
-    serveracl,
+  authotp,
+  bookmark,
+  localplayerchat,
+  player,
+  publickey,
+  realm,
+  realmchat,
+  realmtrain,
+  remoteplayerchat,
+  serveracl,
 );

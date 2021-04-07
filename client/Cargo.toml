@@ -1,9 +1,70 @@
 [package]
-name = "puzzleverse-client"
-version = "0.1.0"
-authors = ["Andre Masella <andre@masella.name>"]
-edition = "2018"
-crate-type = ["bin"]
+name = 'puzzleverse-client'
+version = '0.1.0'
+authors = ['Andre Masella <andre@masella.name>']
+edition = '2018'
 
 [dependencies]
-puzzleverse-core = { path = "../core" }
+addr = "^0.14"
+async-trait = '^0.1'
+bevy_egui ={version =  '^0.4', features=["manage_clipboard", "open_url"]}
+bevy_mod_picking = '^0.4'
+derivative = '^2.2'
+futures = '^0.3'
+futures-sink = '^0.3'
+rmp = '^0.8'
+rmp-serde = '^0.14'
+serde_json = '1.0'
+
+[dependencies.bevy]
+version = '^0.5'
+features = [
+    'bevy_audio',
+    'bevy_wgpu',
+    'bevy_winit',
+    'render',
+    'png',
+    'mp3',
+    'wav',
+    'wayland',
+    'x11',
+]
+
+[dependencies.chrono]
+version = '^0.4'
+features = ['serde']
+
+[dependencies.puzzleverse-core]
+path = '../core'
+
+[dependencies.serde]
+version = '^1.0'
+features = ['derive']
+
+[target."cfg(not(target_arch = \"wasm32\"))".dependencies]
+alerts = '^0.1'
+argparse = '^0.2'
+bytes = '^1.0'
+directories = '^3.0'
+http = '^0.2'
+hyper-native-tls = '^0.3'
+hyper-tls = '^0.5'
+openssl = '^0.10'
+rand = '^0.8'
+self_update = {version = "^0", features = ["archive-zip", "compression-zip-deflate", "rustls" ]}
+tokio = {version='^1.7', features=["default", "macros", "rt-multi-thread"]}
+tokio-tungstenite = '^0.13'
+tungstenite = '^0.12'
+
+[target."cfg(not(target_arch = \"wasm32\"))".dependencies.hyper]
+version = '^0.14'
+features = [
+    'client',
+    'http1',
+]
+[target."cfg(target_arch = \"wasm32\")".dependencies]
+wasm-bindgen = '^0.2'
+
+[target."cfg(target_arch = \"wasm32\")".dependencies.stdweb]
+version = '^0.4'
+features = ['futures-support']
