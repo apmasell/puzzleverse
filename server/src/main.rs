@@ -462,6 +462,19 @@ impl Server {
       .on_conflict_do_nothing()
       .get_result::<String>(db_connection)
   }
+  async fn debut(self: &std::sync::Arc<Server>, player: &str) {
+    let db_connection = self.db_pool.get().unwrap();
+    use crate::schema::player::dsl as player_schema;
+    diesel::update(player_schema::player.filter(player_schema::name.eq(player)))
+      .set(player_schema::debuted.eq(true))
+      .execute(&db_connection)
+      .unwrap();
+    if let Some(player_key) = self.players.read().await.get(player) {
+      if let Some(player_state) = self.player_states.read().await.get(player_key.clone()) {
+        player_state.debuted.store(true, std::sync::atomic::Ordering::Relaxed);
+      }
+    }
+  }
   async fn find_asset(self: &std::sync::Arc<Server>, id: &str, post_action: AssetPullAction) -> bool {
     let mut outstanding_assets = self.outstanding_assets.lock().await;
     if self.asset_store.check(id) {
@@ -986,9 +999,10 @@ impl Server {
       db_connection
         .transaction::<_, diesel::result::Error, _>(|| {
           // Find or create the player's database entry
-          let mut results: Vec<(i32, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> = player_schema::player
+          let mut results: Vec<(i32, bool, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> = player_schema::player
             .select((
               player_schema::id,
+              player_schema::debuted,
               player_schema::message_acl,
               player_schema::online_acl,
               player_schema::location_acl,
@@ -1003,6 +1017,7 @@ impl Server {
                 diesel::insert_into(player_schema::player)
                   .values((
                     player_schema::name.eq(&player_name),
+                    player_schema::debuted.eq(false),
                     player_schema::message_acl.eq(vec![]),
                     player_schema::online_acl.eq(vec![]),
                     player_schema::location_acl.eq(vec![]),
@@ -1011,13 +1026,14 @@ impl Server {
                   ))
                   .returning((
                     player_schema::id,
+                    player_schema::debuted,
                     player_schema::message_acl,
                     player_schema::online_acl,
                     player_schema::location_acl,
                     player_schema::new_realm_access_acl,
                     player_schema::new_realm_admin_acl,
                   ))
-                  .get_result::<(i32, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)>(db_connection)
+                  .get_result::<(i32, bool, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)>(db_connection)
                   .optional()?
               } else {
                 None
@@ -1027,13 +1043,14 @@ impl Server {
           };
 
           Ok(match db_record {
-            Some((id, message_acl, online_acl, location_acl, access_acl, admin_acl)) => {
+            Some((id, debuted, message_acl, online_acl, location_acl, access_acl, admin_acl)) => {
               diesel::update(player_schema::player.filter(player_schema::id.eq(id)))
                 .set(player_schema::last_login.eq(chrono::Utc::now()))
                 .execute(db_connection)?;
 
               Some((
                 id,
+                debuted,
                 Server::parse_player_acl(
                   message_acl,
                   (puzzleverse_core::AccessDefault::Deny, vec![puzzleverse_core::AccessControl::AllowLocal(None)]),
@@ -1052,6 +1069,7 @@ impl Server {
     fn new_state(
       player_name: &str,
       server: &Server,
+      debuted: bool,
       message_acl: std::sync::Arc<tokio::sync::Mutex<AccessControlSetting>>,
       online_acl: std::sync::Arc<tokio::sync::Mutex<AccessControlSetting>>,
       location_acl: std::sync::Arc<tokio::sync::Mutex<AccessControlSetting>>,
@@ -1060,6 +1078,7 @@ impl Server {
       new_connection: crate::player_state::PlayerConnection,
     ) -> crate::player_state::PlayerState {
       crate::player_state::PlayerState {
+        debuted: debuted.into(),
         name: player_name.to_string(),
         principal: format!("{}@{}", player_name, server.name),
         server: Some(server.name.clone()),
@@ -1072,13 +1091,14 @@ impl Server {
       }
     }
     match db_info {
-      Some((db_id, message_acl, online_acl, location_acl, access_acl, admin_acl)) => {
+      Some((db_id, debuted, message_acl, online_acl, location_acl, access_acl, admin_acl)) => {
         let mut active_players = self.player_states.write().await;
         let (player, old_socket) = match self.players.write().await.entry(player_name.to_string()) {
           std::collections::hash_map::Entry::Vacant(entry) => {
             let id = self.player_states.write().await.insert(new_state(
               &player_name,
               &self,
+              debuted,
               message_acl,
               online_acl,
               location_acl,
@@ -1097,6 +1117,7 @@ impl Server {
                 entry.insert(active_players.insert(new_state(
                   &player_name,
                   &self,
+                  debuted,
                   message_acl,
                   online_acl,
                   location_acl,
@@ -1935,70 +1956,74 @@ impl Server {
               .connection
               .send_local(puzzleverse_core::ClientResponse::DirectMessageReceipt {
                 id,
-                status: match crate::player_state::PlayerIdentifier::new(&recipient, &self.name) {
-                  crate::player_state::PlayerIdentifier::Local(name) => self.send_direct_message(player_name, &name, body).await,
-                  crate::player_state::PlayerIdentifier::Remote { server: remote_name, player } => {
-                    let db_connection = self.db_pool.get().unwrap();
-                    let was_sent = match self.remotes.read().await.get(&remote_name) {
-                      Some(remote_key) => match self.remote_states.read().await.get(remote_key.clone()) {
+                status: if player_state.debuted.load(std::sync::atomic::Ordering::Relaxed) {
+                  match crate::player_state::PlayerIdentifier::new(&recipient, &self.name) {
+                    crate::player_state::PlayerIdentifier::Local(name) => self.send_direct_message(player_name, &name, body).await,
+                    crate::player_state::PlayerIdentifier::Remote { server: remote_name, player } => {
+                      let db_connection = self.db_pool.get().unwrap();
+                      let was_sent = match self.remotes.read().await.get(&remote_name) {
+                        Some(remote_key) => match self.remote_states.read().await.get(remote_key.clone()) {
+                          None => false,
+                          Some(state) => {
+                            let mut locked_state = state.connection.lock().await;
+                            match &mut *locked_state {
+                              RemoteConnection::Online(connection) => match connection
+                                .send(RemoteMessage::DirectMessage(vec![RemoteDirectMessage {
+                                  sender: player_name.to_string(),
+                                  recipient: player.clone(),
+                                  timestamp,
+                                  body: body.clone(),
+                                }]))
+                                .await
+                              {
+                                Ok(_) => true,
+                                Err(e) => {
+                                  eprintln!("Failed to send direct message to {}: {}", &remote_name, e);
+                                  false
+                                }
+                              },
+                              RemoteConnection::Dead(_, _) => false,
+                              RemoteConnection::Offline => false,
+                            }
+                          }
+                        },
                         None => false,
-                        Some(state) => {
-                          let mut locked_state = state.connection.lock().await;
-                          match &mut *locked_state {
-                            RemoteConnection::Online(connection) => match connection
-                              .send(RemoteMessage::DirectMessage(vec![RemoteDirectMessage {
-                                sender: player_name.to_string(),
-                                recipient: player.clone(),
-                                timestamp,
-                                body: body.clone(),
-                              }]))
-                              .await
-                            {
-                              Ok(_) => true,
-                              Err(e) => {
-                                eprintln!("Failed to send direct message to {}: {}", &remote_name, e);
-                                false
-                              }
-                            },
-                            RemoteConnection::Dead(_, _) => false,
-                            RemoteConnection::Offline => false,
+                      };
+                      if !was_sent {
+                        self.attempt_remote_server_connection(&remote_name).await;
+                      }
+                      use crate::schema::player::dsl as player_schema;
+                      use crate::schema::remoteplayerchat::dsl as remoteplayerchat_schema;
+                      match diesel::insert_into(remoteplayerchat_schema::remoteplayerchat)
+                        .values(&(
+                          remoteplayerchat_schema::player.eq(sql_not_null_int(
+                            player_schema::player.select(player_schema::id).filter(player_schema::name.eq(player_name)).single_value(),
+                          )),
+                          remoteplayerchat_schema::remote_player.eq(&player),
+                          remoteplayerchat_schema::remote_server.eq(&remote_name),
+                          remoteplayerchat_schema::body.eq(&body),
+                          remoteplayerchat_schema::created.eq(&timestamp),
+                          remoteplayerchat_schema::state.eq(if was_sent { "o" } else { "O" }),
+                        ))
+                        .execute(&db_connection)
+                      {
+                        Ok(_) => {
+                          if was_sent {
+                            puzzleverse_core::DirectMessageStatus::Delivered
+                          } else {
+                            puzzleverse_core::DirectMessageStatus::Queued
                           }
                         }
-                      },
-                      None => false,
-                    };
-                    if !was_sent {
-                      self.attempt_remote_server_connection(&remote_name).await;
-                    }
-                    use crate::schema::player::dsl as player_schema;
-                    use crate::schema::remoteplayerchat::dsl as remoteplayerchat_schema;
-                    match diesel::insert_into(remoteplayerchat_schema::remoteplayerchat)
-                      .values(&(
-                        remoteplayerchat_schema::player.eq(sql_not_null_int(
-                          player_schema::player.select(player_schema::id).filter(player_schema::name.eq(player_name)).single_value(),
-                        )),
-                        remoteplayerchat_schema::remote_player.eq(&player),
-                        remoteplayerchat_schema::remote_server.eq(&remote_name),
-                        remoteplayerchat_schema::body.eq(&body),
-                        remoteplayerchat_schema::created.eq(&timestamp),
-                        remoteplayerchat_schema::state.eq(if was_sent { "o" } else { "O" }),
-                      ))
-                      .execute(&db_connection)
-                    {
-                      Ok(_) => {
-                        if was_sent {
-                          puzzleverse_core::DirectMessageStatus::Delivered
-                        } else {
-                          puzzleverse_core::DirectMessageStatus::Queued
+                        Err(e) => {
+                          eprintln!("Failed to write remote direct message to {} to database: {}", &remote_name, e);
+                          puzzleverse_core::DirectMessageStatus::InternalError
                         }
                       }
-                      Err(e) => {
-                        eprintln!("Failed to write remote direct message to {} to database: {}", &remote_name, e);
-                        puzzleverse_core::DirectMessageStatus::InternalError
-                      }
                     }
+                    crate::player_state::PlayerIdentifier::Bad => puzzleverse_core::DirectMessageStatus::UnknownRecipient,
                   }
-                  crate::player_state::PlayerIdentifier::Bad => puzzleverse_core::DirectMessageStatus::UnknownRecipient,
+                } else {
+                  puzzleverse_core::DirectMessageStatus::Forbidden
                 },
               })
               .await;
@@ -2067,17 +2092,21 @@ impl Server {
               .move_queue
               .lock()
               .await
-              .send(match realm {
-                puzzleverse_core::RealmTarget::Home => RealmMove::ToHome(player.clone()),
-                puzzleverse_core::RealmTarget::LocalRealm(name) => RealmMove::ToExistingRealm { player: player.clone(), realm: name, server: None },
-                puzzleverse_core::RealmTarget::RemoteRealm { realm, server: server_name } => {
-                  server_name.to_lowercase();
-                  RealmMove::ToExistingRealm {
-                    player: player.clone(),
-                    realm,
-                    server: if &server_name == &self.name { None } else { Some(server_name) },
+              .send(if player_state.debuted.load(std::sync::atomic::Ordering::Relaxed) {
+                match realm {
+                  puzzleverse_core::RealmTarget::Home => RealmMove::ToHome(player.clone()),
+                  puzzleverse_core::RealmTarget::LocalRealm(name) => RealmMove::ToExistingRealm { player: player.clone(), realm: name, server: None },
+                  puzzleverse_core::RealmTarget::RemoteRealm { realm, server: server_name } => {
+                    server_name.to_lowercase();
+                    RealmMove::ToExistingRealm {
+                      player: player.clone(),
+                      realm,
+                      server: if &server_name == &self.name { None } else { Some(server_name) },
+                    }
                   }
                 }
+              } else {
+                RealmMove::ToHome(player.clone())
               })
               .await
             {
@@ -2717,7 +2746,8 @@ impl Server {
           let player_key = server.player_states.write().await.insert(crate::player_state::PlayerState {
             principal: format!("{}@{}", &player, server_name),
             name: player.to_string(),
-            server: None,
+            debuted: true.into(),
+            server: Some(server_name.into()),
             mutable: tokio::sync::Mutex::new(crate::player_state::MutablePlayerState {
               goal: crate::player_state::Goal::Undecided,
               connection: crate::player_state::PlayerConnection::Remote(player.to_string(), remote_id.clone()),

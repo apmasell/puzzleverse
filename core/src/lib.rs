@@ -390,6 +390,8 @@ pub enum DirectMessageStatus {
   UnknownRecipient,
   /// The message was placed in a queue to send to a remote server. More delivery information may follow.
   Queued,
+  /// The player isn't allowed to send direct messages yet
+  Forbidden,
   /// An error occurred on the server while sending the message
   InternalError,
 }

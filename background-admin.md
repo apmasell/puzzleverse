@@ -114,3 +114,10 @@ They server administrators can set:
 The rules are combined with the player's personal rules. So, if a remote player
 is blocked at a server level, there is no way for an individual player to still
 allow that player access to their realms.
+
+## Starting the Journey
+When a new player joins your server, they will only be allowed to access their
+home realm. Their home realm must have a trigger to _debut_ the player deciding
+that they are ready to interact with the outside world. As the administrator,
+you can set this realm for your players. Make sure it is configured to have a
+debut puzzle.

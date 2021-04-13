@@ -267,10 +267,6 @@ impl RealmPuzzleState {
     self.committed_movements.retain(|m| m.movement.time() < &(time - chrono::Duration::seconds(10)));
     self.last_update = time;
   }
-  /// Update property values for clients
-  fn update_property_values(&mut self) -> bool {
-    crate::puzzle::prepare_consequences(self)
-  }
   /// Forcibly extract a player from this realm
   pub(crate) fn yank(&mut self, player_id: &crate::PlayerKey, links: &mut std::collections::HashMap<crate::PlayerKey, crate::puzzle::RealmLink>) {
     if let Some((point, _)) = self.active_players.remove(player_id) {
@@ -366,7 +362,7 @@ impl RealmState {
           last_update: chrono::Utc::now(),
           settings,
         };
-        crate::puzzle::prepare_consequences(&mut state);
+        crate::puzzle::prepare_consequences(&mut state, owner.as_ref().unwrap(), server);
         Ok(state)
       })
       .await?;
@@ -440,7 +436,7 @@ impl RealmState {
           state.committed_movements.retain(|m| m.movement.time() <= &last || !links2.contains_key(&m.player));
           s.move_players_from_realm(&realm_owner, links2.into_iter()).await;
 
-          if state.update_property_values() || changed || had_interaction {
+          if crate::puzzle::prepare_consequences(&mut state, &realm_owner, &s) || changed || had_interaction {
             let players = s.player_states.read().await;
             let update = state.make_update_state(&players);
             state.process_realm_event(&s, db_id, None, update).await;

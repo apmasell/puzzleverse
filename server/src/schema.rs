@@ -27,6 +27,7 @@ table! {
         id -> Int4,
         name -> Text,
         realm -> Nullable<Int4>,
+        debuted -> Bool,
         message_acl -> Bytea,
         online_acl -> Bytea,
         location_acl -> Bytea,
@@ -87,4 +88,13 @@ joinable!(bookmark -> player (player));
 joinable!(realmchat -> realm (realm));
 joinable!(remoteplayerchat -> player (player));
 
-allow_tables_to_appear_in_same_query!(authotp, bookmark, localplayerchat, player, realm, realmchat, remoteplayerchat, serveracl,);
+allow_tables_to_appear_in_same_query!(
+    authotp,
+    bookmark,
+    localplayerchat,
+    player,
+    realm,
+    realmchat,
+    remoteplayerchat,
+    serveracl,
+);

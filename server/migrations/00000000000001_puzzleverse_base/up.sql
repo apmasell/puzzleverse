@@ -2,6 +2,7 @@ CREATE TABLE Player (
     id serial PRIMARY KEY NOT NULL,
     name text NOT NULL,
     realm int4,
+    debuted boolean NOT NULL,
     message_acl bytea NOT NULL,
     online_acl bytea NOT NULL,
     location_acl bytea NOT NULL,

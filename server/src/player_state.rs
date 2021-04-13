@@ -4,6 +4,7 @@ use futures::SinkExt;
 ///
 /// This object tracts the current state information for any player. If a player's connection is cut, this object can persist in memory to allow them to recover their state once they log in again.
 pub(crate) struct PlayerState {
+  pub(crate) debuted: std::sync::atomic::AtomicBool,
   pub(crate) location_acl: std::sync::Arc<tokio::sync::Mutex<crate::AccessControlSetting>>,
   pub(crate) message_acl: std::sync::Arc<tokio::sync::Mutex<crate::AccessControlSetting>>,
   pub(crate) mutable: tokio::sync::Mutex<MutablePlayerState>,
