@@ -243,7 +243,13 @@ impl ConsequenceValueMatcher {
         _ => None,
       },
       ConsequenceValueMatcher::NumToDebut { reference, comparison } => match input {
-        PieceValue::Num(v) => Some(PuzzleConsequence::Debut),
+        PieceValue::Num(v) => {
+          if comparison.compare(*v, *reference) {
+            Some(PuzzleConsequence::Debut)
+          } else {
+            None
+          }
+        }
         _ => None,
       },
     }
