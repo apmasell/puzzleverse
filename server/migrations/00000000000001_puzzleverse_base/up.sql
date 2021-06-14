@@ -92,6 +92,14 @@ CREATE TABLE Bookmark (
     CONSTRAINT bookmark_player_id FOREIGN KEY (player) REFERENCES Player (id)
 );
 
+CREATE TABLE PublicKey (
+	  player int4 NOT NULL,
+    name text NOT NULL,
+    public_key bytea NOT NULL,
+    PRIMARY KEY (player, name),
+    CONSTRAINT host_player_id FOREIGN KEY (player) REFERENCES Player (id)
+);
+
 CREATE VIEW LastMessages AS
     SELECT player AS id, MAX(created) AS last_time, remote_player || '@' || remote_server AS principal
       FROM RemotePlayerChat

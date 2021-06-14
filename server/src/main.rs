@@ -211,6 +211,7 @@ pub struct Server {
   realm_states: tokio::sync::RwLock<slotmap::DenseSlotMap<RealmKey, realm::RealmState>>,
   remote_states: tokio::sync::RwLock<slotmap::DenseSlotMap<RemoteKey, RemoteState>>,
   remotes: tokio::sync::RwLock<std::collections::HashMap<String, RemoteKey>>,
+  startup: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -713,6 +714,68 @@ impl Server {
       (&http::Method::GET, "/api/client/v1") => self.open_websocket(req, Server::handle_client_websocket),
       // Handle a new server connection by upgrading to a web socket
       (&http::Method::GET, "/api/server/v1") => self.open_websocket(req, Server::handle_server_websocket),
+      (&http::Method::GET, "/api/client/key") => http::Response::builder().status(http::StatusCode::OK).body(self.signing_key(0).into()),
+      (&http::Method::POST, "/api/client/key") => match hyper::body::aggregate(req).await {
+        Err(e) => {
+          BAD_WEB_REQUEST.inc();
+          eprintln!("Failed to aggregate body: {}", e);
+          http::Response::builder().status(http::StatusCode::INTERNAL_SERVER_ERROR).body(format!("Aggregation failed: {}", e).into())
+        }
+        Ok(whole_body) => {
+          use bytes::buf::Buf;
+          match serde_json::from_reader::<_, puzzleverse_core::AuthPublicKey>(whole_body.reader()) {
+            Err(e) => http::Response::builder().status(http::StatusCode::BAD_REQUEST).body(e.to_string().into()),
+            Ok(data) => {
+              use schema::player::dsl as player_dsl;
+              use schema::publickey::dsl as publickey_dsl;
+              let db_connection = self.db_pool.get().unwrap();
+              match publickey_dsl::publickey
+                .select(publickey_dsl::public_key)
+                .filter(
+                  publickey_dsl::name.eq(&data.name).and(
+                    publickey_dsl::player
+                      .eq(sql_not_null_int(player_dsl::player.select(player_dsl::id).filter(player_dsl::name.eq(&data.player)).single_value())),
+                  ),
+                )
+                .load::<Vec<u8>>(&db_connection)
+              {
+                Ok(public_keys) => {
+                  for der in public_keys {
+                    if let Ok(pkey) = openssl::pkey::PKey::public_key_from_der(der.as_slice()) {
+                      for delta in 0..1 {
+                        if let Ok(mut verifier) = openssl::sign::Verifier::new(openssl::hash::MessageDigest::sha256(), &pkey) {
+                          if let Err(e) = verifier.update(self.signing_key(delta).as_bytes()) {
+                            eprintln!("Signature verification error: {}", e);
+                            continue;
+                          }
+                          if verifier.verify(&data.signature).unwrap_or(false) {
+                            return match jsonwebtoken::encode(
+                              &jsonwebtoken::Header::default(),
+                              &PlayerClaim { exp: jwt_expiry_time(), name: data.player },
+                              &self.jwt_encoding_key,
+                            ) {
+                              Ok(token) => http::Response::builder().status(http::StatusCode::OK).body(token.into()),
+                              Err(e) => {
+                                BAD_WEB_REQUEST.inc();
+                                eprintln!("Error generation JWT: {}", e);
+                                http::Response::builder().status(http::StatusCode::INTERNAL_SERVER_ERROR).body("Failed to generate token".into())
+                              }
+                            };
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+                Err(e) => {
+                  eprintln!("Failed to fetch public keys during authentication: {}", e);
+                }
+              }
+              http::Response::builder().status(http::StatusCode::FORBIDDEN).body("No matching key".into())
+            }
+          }
+        }
+      },
       // Handle a request by a remote server for a connection back
       (&http::Method::POST, "/api/server/v1") => match hyper::body::aggregate(req).await {
         Err(e) => {
@@ -1701,7 +1764,7 @@ impl Server {
                   ) -> diesel::QueryResult<usize> {
                     let db_connection = server.db_pool.get().unwrap();
                     diesel::update(player_schema::player.filter(player_schema::name.eq(player_name))).set(column.eq(encoded)).execute(&db_connection)
-                  };
+                  }
                   let update_result = match &target {
                     puzzleverse_core::AccessTarget::AccessServer => update_server_acl("a"),
                     puzzleverse_core::AccessTarget::AdminServer => update_server_acl("A"),
@@ -2084,6 +2147,53 @@ impl Server {
             if let Some(remote_server) = remote_start {
               self.attempt_remote_server_connection(&remote_server).await;
             }
+            false
+          }
+          puzzleverse_core::ClientRequest::PublicKeyAdd { name, der } => {
+            if let Ok(_) = openssl::pkey::PKey::public_key_from_der(&der) {
+              use schema::publickey::dsl as publickey_dsl;
+              let db_connection = self.db_pool.get().unwrap();
+              if let Err(e) = diesel::insert_into(publickey_dsl::publickey)
+                .values((publickey_dsl::player.eq(db_id), publickey_dsl::name.eq(&name), publickey_dsl::public_key.eq(&der)))
+                .on_conflict_do_nothing()
+                .execute(&db_connection)
+              {
+                eprintln!("Failed to add public key: {}", e);
+              }
+            }
+            false
+          }
+          puzzleverse_core::ClientRequest::PublicKeyDelete { name } => {
+            use schema::publickey::dsl as publickey_dsl;
+            let db_connection = self.db_pool.get().unwrap();
+            if let Err(e) = diesel::delete(publickey_dsl::publickey.filter(publickey_dsl::name.eq(&name).and(publickey_dsl::player.eq(&db_id))))
+              .execute(&db_connection)
+            {
+              eprintln!("Failed to delete public key: {}", e);
+            }
+            false
+          }
+          puzzleverse_core::ClientRequest::PublicKeyDeleteAll => {
+            use schema::publickey::dsl as publickey_dsl;
+            let db_connection = self.db_pool.get().unwrap();
+            if let Err(e) = diesel::delete(publickey_dsl::publickey.filter(publickey_dsl::player.eq(&db_id))).execute(&db_connection) {
+              eprintln!("Failed to delete all public keys: {}", e);
+            }
+            false
+          }
+          puzzleverse_core::ClientRequest::PublicKeyList => {
+            use schema::publickey::dsl as publickey_dsl;
+            let db_connection = self.db_pool.get().unwrap();
+            let result = publickey_dsl::publickey.select(publickey_dsl::name).filter(publickey_dsl::player.eq(&db_id)).load::<String>(&db_connection);
+            match result {
+              Ok(keys) => {
+                mutable_player_state.connection.send_local(puzzleverse_core::ClientResponse::PublicKeys(keys)).await;
+              }
+              Err(e) => {
+                eprintln!("Failed to get public keys: {}", e);
+              }
+            }
+
             false
           }
           puzzleverse_core::ClientRequest::Quit => true,
@@ -3225,6 +3335,9 @@ impl Server {
       }
     }
   }
+  fn signing_key(&self, delta: u8) -> String {
+    format!("{}{}{}", &self.name, (chrono::Utc::now() - self.startup).num_minutes() / 2 - delta as i64, &self.startup)
+  }
 }
 /// Start the server. This is in a separate function from main because the tokio annotation mangles compile error information
 async fn start() -> Result<(), Box<dyn std::error::Error>> {
@@ -3297,6 +3410,7 @@ async fn start() -> Result<(), Box<dyn std::error::Error>> {
     message_acl: read_acl(&db_pool, "m", (puzzleverse_core::AccessDefault::Allow, vec![])),
     db_pool,
     move_epoch: std::sync::atomic::AtomicU64::new(0),
+    startup: chrono::Utc::now(),
   });
   embedded_migrations::run(&*server.db_pool.clone().get().unwrap()).unwrap();
   start_player_mover_task(&server, spawn_receiver);

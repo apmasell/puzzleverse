@@ -39,6 +39,14 @@ table! {
 }
 
 table! {
+    publickey (player, name) {
+        player -> Int4,
+        name -> Text,
+        public_key -> Bytea,
+    }
+}
+
+table! {
     realm (id) {
         id -> Int4,
         principal -> Text,
@@ -85,16 +93,8 @@ table! {
 }
 
 joinable!(bookmark -> player (player));
+joinable!(publickey -> player (player));
 joinable!(realmchat -> realm (realm));
 joinable!(remoteplayerchat -> player (player));
 
-allow_tables_to_appear_in_same_query!(
-    authotp,
-    bookmark,
-    localplayerchat,
-    player,
-    realm,
-    realmchat,
-    remoteplayerchat,
-    serveracl,
-);
+allow_tables_to_appear_in_same_query!(authotp, bookmark, localplayerchat, player, publickey, realm, realmchat, remoteplayerchat, serveracl,);

@@ -1321,6 +1321,7 @@ dependencies = [
  "native-tls",
  "notify",
  "num-integer",
+ "openssl",
  "otpauth",
  "prometheus",
  "puzzleverse-core",

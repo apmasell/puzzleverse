@@ -136,6 +136,12 @@ pub enum AssetError {
   /// The user doesn't have the rights to upload assets to this server
   PermissionError,
 }
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AuthPublicKey {
+  pub name: String,
+  pub player: String,
+  pub signature: Vec<u8>,
+}
 /// Authentication mechanisms that the client and server can use
 ///
 /// A client should perform a `GET` request on a server's `/auth` endpoint to get a JSON-encoded version of this struct detailing which authentication scheme to use
@@ -287,6 +293,20 @@ pub enum ClientRequest {
   /// Try to get the online status and location of another player
   PlayerCheck(String),
 
+  /// Adds a new public key for this player to login with. If the name is already used, this key will replace it.
+  PublicKeyAdd {
+    name: String,
+    der: Vec<u8>,
+  },
+  /// Removes a public key for this player to login with.
+  PublicKeyDelete {
+    name: String,
+  },
+  /// Removes all public keys for this player to login with
+  PublicKeyDeleteAll,
+  /// List the names of all the keys a player can log in with
+  PublicKeyList,
+
   /// Request that we are moved to the entry point of a new realm.
   RealmChange {
     realm: RealmTarget,
@@ -354,6 +374,9 @@ pub enum ClientResponse {
   /// should be animated as warping out from the last known position. The server may send send a
   /// RealmChanged if there is a realm that is targeted..
   InTransit,
+
+  /// All the public keys this player can use to log in with (instead of providing a username/password)
+  PublicKeys(Vec<String>),
 
   /// The user has been changed to a new realm or been denied access. If the player is not in the realm and visible to other players until a realm command is sent. This allows the client time to download any required assets.
   RealmChanged(RealmChange),

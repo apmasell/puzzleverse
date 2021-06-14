@@ -4,6 +4,7 @@ DROP VIEW LastMessages;
 
 ALTER TABLE Player DROP CONSTRAINT player_realm_id;
 
+DROP TABLE PublicKey;
 DROP TABLE Bookmark;
 DROP TABLE ServerACL;
 DROP TABLE RealmChat;
