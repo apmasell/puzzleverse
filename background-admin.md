@@ -119,5 +119,15 @@ allow that player access to their realms.
 When a new player joins your server, they will only be allowed to access their
 home realm. Their home realm must have a trigger to _debut_ the player deciding
 that they are ready to interact with the outside world. As the administrator,
-you can set this realm for your players. Make sure it is configured to have a
-debut puzzle.
+you can list possible realms for your players. This is part of the
+configuration of the server and the realm must be a train-car realm.
+
+## Train-Car Realms
+The server administrator can add realm descriptions to use as train cars. The
+server will choose realms the player has not played as train cars. Not all
+realms can be used as train cars (they must have a link to the next car). Once
+added, train cars cannot be deleted. When adding a realm, the administrator can
+choose if this realm is an appropriate first realm for a player. If multiple
+realms are available as first realms, the system will choose one randomly. A
+realm that is marked as appropriate for a first realm can also be used for
+non-first train cars.

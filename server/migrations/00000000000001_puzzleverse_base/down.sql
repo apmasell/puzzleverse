@@ -2,8 +2,6 @@ DROP INDEX localplayerchat_by_timestamp;
 DROP INDEX remoteplayerchat_by_timestamp;
 DROP VIEW LastMessages;
 
-ALTER TABLE Player DROP CONSTRAINT player_realm_id;
-
 DROP TABLE PublicKey;
 DROP TABLE Bookmark;
 DROP TABLE ServerACL;
@@ -12,5 +10,6 @@ DROP TABLE Realm;
 DROP TABLE LocalPlayerChat;
 DROP TABLE RemotePlayerChat;
 DROP TABLE Player;
+DROP TABLE RealmTrain;
 
 DROP TABLE AuthOTP;

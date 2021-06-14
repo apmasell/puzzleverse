@@ -33,20 +33,18 @@ pub(crate) enum Comparator {
 
 /// A rule that determines how a puzzle piece produces player-visible state
 pub(crate) struct ConsequenceRule {
-  sender: usize,
-  consequence: ConsequenceValueMatcher,
+  pub(crate) sender: usize,
+  pub(crate) consequence: ConsequenceValueMatcher,
 }
 
 /// The logic that binds puzzle piece state values to player-visible state changes either by modifying the map or emitting a property value that will be sent to clients
 pub(crate) enum ConsequenceValueMatcher {
   NumToProperty(String),
-  BoolToDebut,
   BoolToProperty(String),
   BoolToMap(std::sync::Arc<std::sync::atomic::AtomicBool>),
   BoolToMapInverted(std::sync::Arc<std::sync::atomic::AtomicBool>),
   NumToBoolProperty { reference: u32, comparison: Comparator, property: String },
   NumToBoolMap { reference: u32, comparison: Comparator, map: std::sync::Arc<std::sync::atomic::AtomicBool> },
-  NumToDebut { reference: u32, comparison: Comparator },
 }
 
 /// Read a value from a Message Pack buffer
@@ -109,11 +107,11 @@ pub(crate) enum PieceValue {
   RealmList(Vec<RealmLink>),
 }
 pub(crate) struct PropagationRule {
-  sender: usize,
-  trigger: puzzleverse_core::PuzzleEvent,
-  recipient: usize,
-  causes: puzzleverse_core::PuzzleCommand,
-  propagation_match: PropagationValueMatcher,
+  pub(crate) sender: usize,
+  pub(crate) trigger: puzzleverse_core::PuzzleEvent,
+  pub(crate) recipient: usize,
+  pub(crate) causes: puzzleverse_core::PuzzleCommand,
+  pub(crate) propagation_match: PropagationValueMatcher,
 }
 /// Determine how a change in the internal state of a puzzle piece should be used to change the state of other puzzle pieces.
 pub(crate) enum PropagationValueMatcher {
@@ -126,6 +124,7 @@ pub(crate) enum PropagationValueMatcher {
   EmptyToOwnerRealm { asset: String },
   EmptyToSettingRealm { setting: String },
   EmptyToSpawnPoint { name: String },
+  EmptyToTrainNext,
   EmptyToHome,
   BoolInvert,
   BoolEmpty { input: bool },
@@ -150,7 +149,6 @@ pub(crate) trait PuzzleAsset {
 pub(crate) enum PuzzleConsequence<'a> {
   ClientStateUpdate(&'a str, puzzleverse_core::PropertyValue),
   UpdateMap(&'a std::sync::Arc<std::sync::atomic::AtomicBool>, bool),
-  Debut,
 }
 
 /// An active puzzle component in a realm's logic
@@ -186,6 +184,7 @@ pub(crate) enum RealmLink {
   Owner(String),
   Spawn(String),
   Home,
+  TrainNext,
 }
 
 type SerializationResult = Result<(), rmp::encode::ValueWriteError>;
@@ -216,10 +215,6 @@ impl ConsequenceValueMatcher {
         PieceValue::Num(v) => Some(PuzzleConsequence::ClientStateUpdate(property, puzzleverse_core::PropertyValue::Num(*v))),
         _ => None,
       },
-      ConsequenceValueMatcher::BoolToDebut => match input {
-        PieceValue::Bool(true) => Some(PuzzleConsequence::Debut),
-        _ => None,
-      },
       ConsequenceValueMatcher::BoolToProperty(property) => match input {
         PieceValue::Bool(v) => Some(PuzzleConsequence::ClientStateUpdate(property, puzzleverse_core::PropertyValue::Bool(*v))),
         _ => None,
@@ -240,16 +235,6 @@ impl ConsequenceValueMatcher {
       },
       ConsequenceValueMatcher::NumToBoolMap { reference, comparison, map } => match input {
         PieceValue::Num(v) => Some(PuzzleConsequence::UpdateMap(map, comparison.compare(*v, *reference))),
-        _ => None,
-      },
-      ConsequenceValueMatcher::NumToDebut { reference, comparison } => match input {
-        PieceValue::Num(v) => {
-          if comparison.compare(*v, *reference) {
-            Some(PuzzleConsequence::Debut)
-          } else {
-            None
-          }
-        }
         _ => None,
       },
     }
@@ -305,6 +290,10 @@ impl PropagationValueMatcher {
       },
       PropagationValueMatcher::EmptyToSpawnPoint { name } => match input {
         PieceValue::Empty => Some(PieceValue::Realm(RealmLink::Spawn(name.clone()))),
+        _ => None,
+      },
+      PropagationValueMatcher::EmptyToTrainNext => match input {
+        PieceValue::Empty => Some(PieceValue::Realm(RealmLink::TrainNext)),
         _ => None,
       },
       PropagationValueMatcher::EmptyToHome => match input {
@@ -400,13 +389,6 @@ pub(crate) fn prepare_consequences(state: &mut crate::realm::RealmPuzzleState, o
             changed |= state.current_states.insert(name.into(), value.clone()).map(|old| old == value).unwrap_or(true);
           }
           PuzzleConsequence::UpdateMap(storage, state) => storage.store(state, std::sync::atomic::Ordering::Relaxed),
-          PuzzleConsequence::Debut => {
-            let server = server.clone();
-            let owner = owner.to_string();
-            tokio::spawn(async move {
-              server.debut(&owner).await;
-            });
-          }
         }
       }
     }
@@ -606,6 +588,7 @@ impl DecodeSaved for RealmLink {
       b's' => Ok(RealmLink::Spawn(read_str(input)?.into())),
       b'o' => Ok(RealmLink::Owner(read_str(input)?.into())),
       b'h' => Ok(RealmLink::Home),
+      b't' => Ok(RealmLink::TrainNext),
       _ => Err(ValueReadError::TypeMismatch(rmp::Marker::Reserved)),
     }
   }
@@ -630,6 +613,7 @@ impl EncodeValue for RealmLink {
         rmp::encode::write_str(output, point)
       }
       RealmLink::Home => rmp::encode::write_u8(output, b'h'),
+      RealmLink::TrainNext => rmp::encode::write_u8(output, b't'),
     }
   }
 }

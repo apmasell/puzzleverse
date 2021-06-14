@@ -8,6 +8,7 @@ pub(crate) enum LoadError {
   Serde(rmp_serde::decode::Error),
   Rmp(rmp::decode::ValueReadError),
   NoOwner,
+  BadRealm,
 }
 
 #[derive(Clone)]
@@ -54,6 +55,7 @@ impl RealmPuzzleState {
     target: usize,
     interaction: &puzzleverse_core::InteractionType,
     time: &chrono::DateTime<chrono::Utc>,
+    train: Option<u16>,
   ) -> puzzleverse_core::InteractionResult {
     if let Some(piece) = self.pieces.get_mut(target) {
       let (result, events) = piece.interact(interaction);
@@ -88,7 +90,7 @@ impl RealmPuzzleState {
         }
       }
       links.retain(|_, v| !matches!(v, crate::puzzle::RealmLink::Spawn(_)));
-      server.move_players_from_realm(realm_owner, links.drain()).await;
+      server.move_players_from_realm(realm_owner, train, links).await;
       result
     } else {
       puzzleverse_core::InteractionResult::Invalid
@@ -303,7 +305,7 @@ impl RealmState {
 
     let db_connection = server.db_pool.get().map_err(LoadError::R2D2)?;
 
-    let (db_id, initialised, admin_acls_bin, access_acls_bin, puzzle_state_bin, seed, settings_bin, asset, name, in_directory, owner): (
+    let (db_id, initialised, admin_acls_bin, access_acls_bin, puzzle_state_bin, seed, settings_bin, asset, name, in_directory, owner, train): (
       i32,
       bool,
       Vec<u8>,
@@ -315,6 +317,7 @@ impl RealmState {
       String,
       bool,
       Option<String>,
+      Option<i32>,
     ) = realm_schema::realm
       .select((
         realm_schema::id,
@@ -328,16 +331,18 @@ impl RealmState {
         realm_schema::name,
         realm_schema::in_directory,
         player_schema::player.select(player_schema::name).filter(player_schema::id.eq(realm_schema::owner)).single_value(),
+        realm_schema::train,
       ))
       .filter(realm_schema::principal.eq(principal))
       .first(&db_connection)
       .map_err(LoadError::Diesel)?;
 
+    let train = train.map(|t| t as u16 + 1);
     let admin_acls: crate::AccessControlSetting = rmp_serde::from_read(std::io::Cursor::new(admin_acls_bin.as_slice())).map_err(LoadError::Serde)?;
     let access_acls: crate::AccessControlSetting =
       rmp_serde::from_read(std::io::Cursor::new(access_acls_bin.as_slice())).map_err(LoadError::Serde)?;
     let mut puzzle_state = server
-      .load_realm_description(&asset, |piece_assets, propagation_rules, consequence_rules, manifold, settings| {
+      .load_realm_description(&asset, Err(LoadError::BadRealm), |piece_assets, propagation_rules, consequence_rules, manifold, settings| {
         let now = chrono::Utc::now();
         let pieces = if initialised {
           let mut input = std::io::Cursor::new(puzzle_state_bin.as_slice());
@@ -394,7 +399,7 @@ impl RealmState {
           let mut changed = !links.is_empty();
           state.committed_movements.retain(|m| m.movement.time() <= &last || !links.contains_key(&m.player));
 
-          s.move_players_from_realm(&realm_owner, links.into_iter()).await;
+          s.move_players_from_realm(&realm_owner, train, links).await;
 
           let mut had_interaction = false;
           let mut bad_interactions = std::collections::HashMap::new();
@@ -413,7 +418,7 @@ impl RealmState {
           for (player, interaction, at, time) in interactions.into_iter() {
             if !bad_interactions.contains_key(&player) {
               if let Some(piece_id) = state.manifold.interaction_target(&at) {
-                match state.interact(&s, &realm_owner, piece_id, &interaction, &now).await {
+                match state.interact(&s, &realm_owner, piece_id, &interaction, &now, train).await {
                   puzzleverse_core::InteractionResult::Invalid => eprintln!("Invalid interaction on puzzle piece {} in realm {}", piece_id, db_id),
                   puzzleverse_core::InteractionResult::Failed => {
                     bad_interactions.insert(player, time);
@@ -434,7 +439,7 @@ impl RealmState {
           state.update_locations(&mut links2);
           changed |= !links2.is_empty();
           state.committed_movements.retain(|m| m.movement.time() <= &last || !links2.contains_key(&m.player));
-          s.move_players_from_realm(&realm_owner, links2.into_iter()).await;
+          s.move_players_from_realm(&realm_owner, train, links2).await;
 
           if crate::puzzle::prepare_consequences(&mut state, &realm_owner, &s) || changed || had_interaction {
             let players = s.player_states.read().await;
@@ -488,6 +493,7 @@ impl std::fmt::Debug for LoadError {
       LoadError::Serde(v) => v.fmt(f),
       LoadError::Rmp(v) => v.fmt(f),
       LoadError::NoOwner => f.write_str("Realm has no owner. Missing foreign key constraint in DB?"),
+      LoadError::BadRealm => f.write_str("Asset is not a realm that this server can handle."),
     }
   }
 }

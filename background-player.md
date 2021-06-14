@@ -92,6 +92,24 @@ will.
 You can also choose to erase a realm that you own. It will no longer be
 available to you or other players.
 
+## Train-car Mode
+In the TV series [_Infinity Train_](https://infinity-train.fandom.com/),
+characters travel through a series of train cars, each with a separate world
+inside, where the characters must travel solve puzzles to unlock the door
+allowing them to proceed to the next car. Puzzleverse has a "train mode" where
+the administrator can add appropriate realms to a list and you can play through
+them in a random order.
+
+Train realms are not really different from regular realms except that they have
+a goal that is supposed to send you to the next train car. If a train realm is
+created directly (rather than through the automatic disc-jockey mechanism), the
+goal will send you to your home realm. This will also happen when the queue of
+realms is empty. If new realms are added by your administrator, a new realm
+will be automatically created. In the realm navigator, train car realms will be
+marked with their sequence number.
+
+The realm navigator will allow you start a train.
+
 ## Other Features
 Like any good social network, the system also supports direct messages between
 players of any server. There are also access controls if you wish to block

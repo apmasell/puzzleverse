@@ -239,19 +239,19 @@ Commands:
 These rules determine how the current state of the puzzle should affect the game play.
 
 - _number-to-property_: set a numeric property that can be seen on the client
-- _Boolean-to-debut_: if the Boolean value is true, the owner of the realm has completed their debut challenge
 - _Boolean-to-property_: set a Boolean property that can be seen on the client
 - _Boolean-to-map_: change the terrain based on a Boolean value
 - _Boolean-to-map-inverted_: change the terrain based on a Boolean value
 - _number-to-bool-property_: set a Boolean property by checking if a number value satisfies some condition
 - _number-to-bool-map_: change the terrain based on if a number value satisfies some condition
-- _number-to-debut_: debut the owner of this realm if a number value satisfies some condition
 
 When a player first starts, the server will create a new realm for them to act
 as their home. It also serves as a challenge for them to solve before they are
 allowed to interact with other players. The puzzles in a realm can choose to
 _debut_ a player, allow them to access other realms and direct message other
-players.
+players. This is done through the train-car mechanism. When puzzle links to the
+"train next" realm, this will send the player to the next train car and, if it
+is the player's home realm, it will debut them.
 
 A realm for use as players initial realms must have a debut mechanism (or the
 player will be trapped there). Having a debut consequence in a realm which is

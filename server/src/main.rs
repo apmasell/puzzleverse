@@ -86,6 +86,7 @@ pub type AccessControlSetting = (puzzleverse_core::AccessDefault, Vec<puzzlevers
 pub enum AssetPullAction {
   PushToPlayer(PlayerKey),
   LoadRealm(String, std::sync::Arc<std::sync::atomic::AtomicUsize>),
+  AddToTrain(bool),
 }
 
 type OutgoingConnection<T> = futures::sink::With<
@@ -117,6 +118,7 @@ enum RealmMove {
   ToHome(PlayerKey),
   ToExistingRealm { player: PlayerKey, realm: String, server: Option<String> },
   ToRealm { player: PlayerKey, owner: String, asset: String },
+  ToTrain { player: PlayerKey, owner: String, train: u16 },
 }
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 struct RemoteClaim {
@@ -311,6 +313,60 @@ impl RemoteConnection {
 }
 
 impl Server {
+  async fn add_train(self: &std::sync::Arc<Server>, asset: &str, allowed_first: bool) {
+    if self
+      .load_realm_description(asset, false, |_, propagation_rules, _, _, _| {
+        propagation_rules.iter().any(|rule| match rule.propagation_match {
+          puzzle::PropagationValueMatcher::EmptyToTrainNext => true,
+          _ => false,
+        })
+      })
+      .await
+    {
+      let result = {
+        let db_connection = self.db_pool.get().unwrap();
+        db_connection.transaction::<_, diesel::result::Error, _>(|| {
+          use schema::player::dsl as player_schema;
+          use schema::realm::dsl as realm_schema;
+          use schema::realmtrain::dsl as realmtrain_schema;
+          diesel::insert_into(realmtrain_schema::realmtrain)
+            .values((realmtrain_schema::asset.eq(asset), realmtrain_schema::allowed_first.eq(allowed_first)))
+            .on_conflict(realmtrain_schema::asset)
+            .do_update()
+            .set(realmtrain_schema::allowed_first.eq(allowed_first))
+            .execute(&db_connection)?;
+          player_schema::player
+            .select((
+              player_schema::name,
+              realm_schema::realm.select(diesel::dsl::max(realm_schema::train)).filter(realm_schema::owner.eq(player_schema::id)).single_value(),
+            ))
+            .filter(player_schema::waiting_for_train.and(diesel::dsl::not(diesel::dsl::exists(
+              realm_schema::realm.filter(realm_schema::owner.eq(player_schema::id).and(realm_schema::asset.eq(asset))),
+            ))))
+            .load::<(String, Option<i32>)>(&db_connection)
+        })
+      };
+      match result {
+        Err(e) => {
+          eprintln!("Failed to insert realm into train: {}", e);
+        }
+        Ok(waiting_players) => {
+          let db_connection = self.db_pool.get().unwrap();
+          for (owner, train) in waiting_players {
+            if let Err(e) = db_connection.transaction(|| {
+              use schema::player::dsl as player_schema;
+              Server::create_realm(&db_connection, asset, &owner, None, None, Some(train.unwrap_or(0) as u16))?;
+              diesel::update(player_schema::player.filter(player_schema::name.eq(&owner)))
+                .set(player_schema::waiting_for_train.eq(false))
+                .execute(&db_connection)
+            }) {
+              eprintln!("Failed to create new train realm {} for {}: {}", asset, &owner, e);
+            }
+          }
+        }
+      }
+    }
+  }
   async fn attempt_remote_server_connection(self: &std::sync::Arc<Server>, remote_name: &str) -> () {
     let mut remote_contacts = self.attempting_remote_contacts.lock().await;
     if !remote_contacts.contains(remote_name)
@@ -430,6 +486,7 @@ impl Server {
     owner: &str,
     name: Option<String>,
     seed: Option<i32>,
+    train: Option<u16>,
   ) -> diesel::QueryResult<String> {
     use sha3::Digest;
     let mut principal_hash = sha3::Sha3_512::new();
@@ -458,21 +515,34 @@ impl Server {
         )),
         realm_schema::in_directory.eq(false),
         realm_schema::initialised.eq(false),
+        realm_schema::train.eq(train.map(|t| t as i32)),
       ))
       .returning(realm_schema::principal)
       .on_conflict_do_nothing()
       .get_result::<String>(db_connection)
   }
-  async fn debut(self: &std::sync::Arc<Server>, player: &str) {
-    let db_connection = self.db_pool.get().unwrap();
-    use crate::schema::player::dsl as player_schema;
-    diesel::update(player_schema::player.filter(player_schema::name.eq(player)))
-      .set(player_schema::debuted.eq(true))
-      .execute(&db_connection)
-      .unwrap();
-    if let Some(player_key) = self.players.read().await.get(player) {
-      if let Some(player_state) = self.player_states.read().await.get(player_key.clone()) {
-        player_state.debuted.store(true, std::sync::atomic::Ordering::Relaxed);
+  async fn debut(self: &Server, player: &str) {
+    let write_to_db = match self.players.read().await.get(player) {
+      Some(player_key) => match self.player_states.read().await.get(player_key.clone()) {
+        Some(player_state) => {
+          if player_state.debuted.load(std::sync::atomic::Ordering::Relaxed) {
+            false
+          } else {
+            player_state.debuted.store(true, std::sync::atomic::Ordering::Relaxed);
+            true
+          }
+        }
+        None => true,
+      },
+      None => true,
+    };
+    if write_to_db {
+      let db_connection = self.db_pool.get().unwrap();
+      use crate::schema::player::dsl as player_schema;
+      if let Err(e) =
+        diesel::update(player_schema::player.filter(player_schema::name.eq(player))).set(player_schema::debuted.eq(true)).execute(&db_connection)
+      {
+        println!("Failed to debut player {}: {}", player, e);
       }
     }
   }
@@ -563,7 +633,7 @@ impl Server {
         Some((asset, owner)) => {
           let result = {
             let db_connection = self.db_pool.get().unwrap();
-            Server::create_realm(&db_connection, &asset, &owner, None, None)
+            Server::create_realm(&db_connection, &asset, &owner, None, None, None)
           };
           match result {
             Err(e) => {
@@ -1042,8 +1112,13 @@ impl Server {
   ) -> Vec<puzzleverse_core::Realm> {
     let db_connection = self.db_pool.get().unwrap();
     use crate::schema::realm::dsl as realm_schema;
-    match realm_schema::realm.select((realm_schema::principal, realm_schema::name)).filter(predicate).load::<(String, String)>(&db_connection) {
-      Ok(mut entries) => entries.drain(..).map(|(id, name)| puzzleverse_core::Realm { id, name }).collect(),
+    match realm_schema::realm.select((realm_schema::principal, realm_schema::name, realm_schema::train)).filter(predicate).load::<(
+      String,
+      String,
+      Option<i32>,
+    )>(&db_connection)
+    {
+      Ok(entries) => entries.into_iter().map(|(id, name, train)| puzzleverse_core::Realm { id, name, train: train.map(|t| t as u16) }).collect(),
       Err(e) => {
         eprintln!("Failed to get realms from DB: {}", e);
         vec![]
@@ -1303,19 +1378,19 @@ impl Server {
   }
   async fn load_realm_description<
     T,
-    E,
     F: FnOnce(
       Vec<Box<dyn crate::puzzle::PuzzleAsset>>,
       Vec<crate::puzzle::PropagationRule>,
       Vec<crate::puzzle::ConsequenceRule>,
       crate::realm::navigation::RealmManifold,
       std::collections::BTreeMap<String, puzzleverse_core::RealmSetting>,
-    ) -> Result<T, E>,
+    ) -> T,
   >(
     &self,
     asset: &str,
+    error: T,
     func: F,
-  ) -> Result<T, E> {
+  ) -> T {
     todo!()
   }
   async fn move_player(self: &std::sync::Arc<Server>, request: RealmMove) -> () {
@@ -1352,11 +1427,74 @@ impl Server {
 
             match result {
               Some(id) => Ok(ReleaseTarget::Realm(id, self.name.clone())),
-              None => Ok(ReleaseTarget::Realm(Server::create_realm(&db_connection, &asset, &owner, None, None)?, self.name.clone())),
+              None => Ok(ReleaseTarget::Realm(Server::create_realm(&db_connection, &asset, &owner, None, None, None)?, self.name.clone())),
             }
           }) {
             Err(e) => {
               eprintln!("Failed to figure out realm {} for {}: {}", &asset, &owner, e);
+              ReleaseTarget::Transit
+            }
+            Ok(v) => v,
+          },
+        )
+      }
+      RealmMove::ToTrain { player, owner, train } => {
+        let db_connection = self.db_pool.get().unwrap();
+        (
+          player,
+          match db_connection.transaction::<_, diesel::result::Error, _>(|| {
+            use crate::schema::player::dsl as player_schema;
+            use crate::schema::realm::dsl as realm_schema;
+            let result = realm_schema::realm
+              .select(realm_schema::principal)
+              .filter(
+                realm_schema::train.eq(train as i32).and(
+                  realm_schema::owner
+                    .nullable()
+                    .eq(player_schema::player.select(player_schema::id).filter(player_schema::name.eq(&owner)).single_value()),
+                ),
+              )
+              .get_result::<String>(&db_connection)
+              .optional()?;
+
+            match result {
+              Some(id) => Ok(ReleaseTarget::Realm(id, self.name.clone())),
+              None => {
+                use crate::schema::realmtrain::dsl as realmtrain_schema;
+                use rand::seq::SliceRandom;
+                let mut train_query = realmtrain_schema::realmtrain
+                  .select(realmtrain_schema::asset)
+                  .filter(
+                    realmtrain_schema::asset.ne_all(
+                      realm_schema::realm.select(realm_schema::asset).filter(
+                        realm_schema::owner
+                          .nullable()
+                          .eq(player_schema::player.select(player_schema::id).filter(player_schema::name.eq(&owner)).single_value()),
+                      ),
+                    ),
+                  )
+                  .into_boxed();
+                if train == 0 {
+                  train_query = train_query.filter(realmtrain_schema::allowed_first)
+                };
+                let mut assets = train_query.load::<String>(&db_connection)?;
+                assets.shuffle(&mut rand::thread_rng());
+                match assets.get(0) {
+                  Some(asset) => {
+                    Ok(ReleaseTarget::Realm(Server::create_realm(&db_connection, &asset, &owner, None, None, Some(train))?, self.name.clone()))
+                  }
+                  None => {
+                    diesel::update(player_schema::player.filter(player_schema::name.eq(&owner)))
+                      .set(player_schema::waiting_for_train.eq(true))
+                      .execute(&db_connection)?;
+                    Ok(ReleaseTarget::Home)
+                  }
+                }
+              }
+            }
+          }) {
+            Err(e) => {
+              eprintln!("Failed to figure out next realm in train after {} for {}: {}", train, &owner, e);
               ReleaseTarget::Transit
             }
             Ok(v) => v,
@@ -1406,7 +1544,12 @@ impl Server {
       }
     }
   }
-  async fn move_players_from_realm<T: IntoIterator<Item = (crate::PlayerKey, crate::puzzle::RealmLink)>>(&self, realm_owner: &str, links: T) {
+  async fn move_players_from_realm<T: IntoIterator<Item = (crate::PlayerKey, crate::puzzle::RealmLink)>>(
+    &self,
+    realm_owner: &str,
+    train: Option<u16>,
+    links: T,
+  ) {
     let queue = self.move_queue.lock().await;
     for (player, link) in links {
       match link {
@@ -1425,6 +1568,18 @@ impl Server {
         puzzle::RealmLink::Spawn(_) => eprintln!("Trying to move player to spawn point. This should have been dealt with already"),
         puzzle::RealmLink::Home => {
           if let Err(e) = queue.send(RealmMove::ToHome(player)).await {
+            eprintln!("Failed to put player into move queue: {}", e);
+          }
+        }
+        puzzle::RealmLink::TrainNext => {
+          self.debut(realm_owner).await;
+          if let Err(e) = queue
+            .send(match train {
+              Some(train) => RealmMove::ToTrain { player, owner: realm_owner.into(), train },
+              None => RealmMove::ToHome(player),
+            })
+            .await
+          {
             eprintln!("Failed to put player into move queue: {}", e);
           }
         }
@@ -2204,7 +2359,7 @@ impl Server {
               .await
               .send(if player_state.debuted.load(std::sync::atomic::Ordering::Relaxed) {
                 match realm {
-                  puzzleverse_core::RealmTarget::Home => RealmMove::ToHome(player.clone()),
+                  puzzleverse_core::RealmTarget::Home => RealmMove::ToTrain { player: player.clone(), owner: player_name.into(), train: 0 },
                   puzzleverse_core::RealmTarget::LocalRealm(name) => RealmMove::ToExistingRealm { player: player.clone(), realm: name, server: None },
                   puzzleverse_core::RealmTarget::RemoteRealm { realm, server: server_name } => {
                     server_name.to_lowercase();
@@ -2216,7 +2371,25 @@ impl Server {
                   }
                 }
               } else {
-                RealmMove::ToHome(player.clone())
+                match realm {
+                  puzzleverse_core::RealmTarget::LocalRealm(name) => {
+                    use schema::realm::dsl as realm_schema;
+                    let db_connection = self.db_pool.get().unwrap();
+                    match realm_schema::realm
+                      .select(diesel::dsl::count_star())
+                      .filter(realm_schema::name.eq(&name).and(realm_schema::owner.eq(db_id)))
+                      .first(&db_connection)
+                    {
+                      Err(e) => {
+                        eprintln!("Failed to determine if non-debuted player {} can access {}: {}", player_name, &name, e);
+                        RealmMove::ToHome(player.clone())
+                      }
+                      Ok(1) => RealmMove::ToExistingRealm { player: player.clone(), realm: name, server: None },
+                      _ => RealmMove::ToHome(player.clone()),
+                    }
+                  }
+                  _ => RealmMove::ToHome(player.clone()),
+                }
               })
               .await
             {
@@ -2226,7 +2399,7 @@ impl Server {
           }
           puzzleverse_core::ClientRequest::RealmCreate { id, name, asset, seed } => {
             let db_connection = self.db_pool.get().unwrap();
-            let result = Server::create_realm(&db_connection, &asset, player_name, Some(name), seed);
+            let result = Server::create_realm(&db_connection, &asset, player_name, Some(name), seed, None);
             mutable_player_state
               .connection
               .send_local(puzzleverse_core::ClientResponse::RealmCreation {
@@ -2251,9 +2424,9 @@ impl Server {
               let should_delete = if let Some(realm_state) = realm_states.get(realm_id.clone()) {
                 if &realm_state.owner == player_name {
                   let puzzle_state = realm_state.puzzle_state.lock().await;
-                  let mut links: std::collections::HashMap<_, _> =
+                  let links: std::collections::HashMap<_, _> =
                     puzzle_state.active_players.keys().into_iter().map(|p| (p.clone(), puzzle::RealmLink::Home)).collect();
-                  self.move_players_from_realm(&realm_state.owner, links.drain()).await;
+                  self.move_players_from_realm(&realm_state.owner, None, links).await;
                   true
                 } else {
                   false
@@ -2272,21 +2445,8 @@ impl Server {
               realms.remove(&target);
             }
             let result = db_connection.transaction::<_, diesel::result::Error, _>(|| {
-              use crate::schema::player::dsl as player_schema;
               use crate::schema::realm::dsl as realm_schema;
               use crate::schema::realmchat::dsl as chat_schema;
-              diesel::update(
-                player_schema::player.filter(
-                  player_schema::realm.eq(
-                    realm_schema::realm
-                      .select(realm_schema::id)
-                      .filter(realm_schema::principal.eq(&target).and(realm_schema::owner.eq(db_id)))
-                      .single_value(),
-                  ),
-                ),
-              )
-              .set(player_schema::realm.eq::<Option<i32>>(None))
-              .execute(&db_connection)?;
               diesel::delete(
                 chat_schema::realmchat.filter(
                   chat_schema::realm.nullable().eq(
@@ -2375,6 +2535,40 @@ impl Server {
               }
             }
             mutable_player_state.connection.send_local(puzzleverse_core::ClientResponse::Servers(active_remotes)).await;
+            false
+          }
+          puzzleverse_core::ClientRequest::TrainAdd(asset, allowed_first) => {
+            if {
+              let acl = &self.admin_acl.lock().await;
+              (*acl).0.check::<&str, _, _>(acl.1.iter(), player_name, &None, &self.name)
+            } {
+              use schema::realmtrain::dsl as realmtrain_schema;
+              let db_connection = self.db_pool.get().unwrap();
+              let result = realmtrain_schema::realmtrain
+                .select(realmtrain_schema::allowed_first)
+                .filter(realmtrain_schema::asset.eq(&asset))
+                .get_result::<bool>(&db_connection);
+              match result {
+                Err(diesel::result::Error::NotFound) => {
+                  if self.find_asset(&asset, AssetPullAction::AddToTrain(allowed_first)).await {
+                    self.add_train(&asset, allowed_first).await;
+                  }
+                }
+                Ok(value) => {
+                  if value != allowed_first {
+                    if let Err(e) = diesel::update(realmtrain_schema::realmtrain.filter(realmtrain_schema::asset.eq(&asset)))
+                      .set(realmtrain_schema::allowed_first.eq(allowed_first))
+                      .execute(&db_connection)
+                    {
+                      println!("Failed to update allowed first for train asset {}: {}", &asset, e);
+                    }
+                  }
+                }
+                Err(e) => {
+                  eprintln!("Failed to check train assets for {}: {}", &asset, e);
+                }
+              }
+            }
             false
           }
         }
@@ -2754,7 +2948,7 @@ impl Server {
                       let mut links = std::collections::hash_map::HashMap::new();
                       links.insert(kicked_player_id.clone(), crate::puzzle::RealmLink::Home);
                       realm_state.puzzle_state.lock().await.yank(kicked_player_id, &mut links);
-                      self.move_players_from_realm(&realm_state.owner, links.drain()).await;
+                      self.move_players_from_realm(&realm_state.owner, None, links).await;
                     }
                   }
                 }
@@ -2906,6 +3100,9 @@ impl Server {
               if let Some(player_state) = self.player_states.read().await.get(player) {
                 player_state.mutable.lock().await.connection.send_local(puzzleverse_core::ClientResponse::Asset(asset_name, asset_value)).await;
               }
+            }
+            AssetPullAction::AddToTrain(allowed_first) => {
+              self.add_train(&asset_name, allowed_first).await;
             }
             AssetPullAction::LoadRealm(realm, counter) => {
               let missing_children: Vec<_> = asset_value.children.iter().filter(|ca| !self.asset_store.check(ca)).collect();
@@ -3152,7 +3349,7 @@ impl Server {
                   let mut links = std::collections::hash_map::HashMap::new();
                   links.insert(player_id.clone(), crate::puzzle::RealmLink::Home);
                   puzzle_state.yank(player_id, &mut links);
-                  self.move_players_from_realm(&realm_state.owner, links.drain()).await;
+                  self.move_players_from_realm(&realm_state.owner, None, links).await;
                 }
               }
               _ => (),
@@ -3173,7 +3370,6 @@ impl Server {
   ) -> (player_state::Goal, Option<puzzleverse_core::RealmChange>) {
     match target {
       ReleaseTarget::Home => {
-        use crate::schema::player::dsl as player_schema;
         use crate::schema::realm::dsl as realm_schema;
         self
           .clone()
@@ -3182,7 +3378,7 @@ impl Server {
             player_name,
             server_name,
             Some((DEFAULT_HOME, player_name.to_string())),
-            realm_schema::id.nullable().eq(player_schema::player.select(player_schema::realm).filter(player_schema::id.eq(db_id)).single_value()),
+            realm_schema::owner.eq(db_id).and(realm_schema::train.eq(0)),
           )
           .await
       }

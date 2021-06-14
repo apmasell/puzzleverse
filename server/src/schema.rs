@@ -26,8 +26,8 @@ table! {
     player (id) {
         id -> Int4,
         name -> Text,
-        realm -> Nullable<Int4>,
         debuted -> Bool,
+        waiting_for_train -> Bool,
         message_acl -> Bytea,
         online_acl -> Bytea,
         location_acl -> Bytea,
@@ -50,6 +50,7 @@ table! {
     realm (id) {
         id -> Int4,
         principal -> Text,
+        train -> Nullable<Int4>,
         name -> Text,
         owner -> Int4,
         asset -> Text,
@@ -75,6 +76,13 @@ table! {
 }
 
 table! {
+    realmtrain (asset) {
+        asset -> Text,
+        allowed_first -> Bool,
+    }
+}
+
+table! {
     remoteplayerchat (remote_player, remote_server, created, player, state) {
         player -> Int4,
         state -> Varchar,
@@ -94,7 +102,19 @@ table! {
 
 joinable!(bookmark -> player (player));
 joinable!(publickey -> player (player));
+joinable!(realm -> player (owner));
 joinable!(realmchat -> realm (realm));
 joinable!(remoteplayerchat -> player (player));
 
-allow_tables_to_appear_in_same_query!(authotp, bookmark, localplayerchat, player, publickey, realm, realmchat, remoteplayerchat, serveracl,);
+allow_tables_to_appear_in_same_query!(
+    authotp,
+    bookmark,
+    localplayerchat,
+    player,
+    publickey,
+    realm,
+    realmchat,
+    realmtrain,
+    remoteplayerchat,
+    serveracl,
+);

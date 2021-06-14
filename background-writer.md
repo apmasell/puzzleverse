@@ -34,6 +34,7 @@ There are there are a few kinds:
 - global: send a player to a particular _instance_ of a realm.
 - settings: like global, but the player can customise which realm without changing the realm itself
 - owner: send the players to another instance of a realm using only the asset identifier; this finds or creates the instance of that asset identifier for owner of the current realm
+- train-car: send the player to the next train-car when in train-car mode
 
 This might all be a bit abstract and this design was intended as improvement of
 _Myst Online: Uru Live_.
@@ -63,6 +64,12 @@ There is a subtle change to the behaviour of _MOUL_: if me and another player
 are in Teledahn and use the link to Gahreesen, I will go to _my_ Gahreesen and
 they will go to _their_ Gahreesen. The Puzzleverse behaviour is that we would
 both go to _my_ Gahreesen because we are in _my_ Teledahn.
+
+Train-car links work like owner-links with the only difference being that the
+train car queuing system will automatically select the next realm. When
+train-car realms are created, the sequence number is baked into the realm. This
+means that each player will link between realms in a consistent order, though
+that order is unique to each player.
 
 ## Client/Server Split and Puzzles
 When creating a realm, some of the behaviour will exist on the client and some

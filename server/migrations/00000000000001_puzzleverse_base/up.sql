@@ -1,8 +1,8 @@
 CREATE TABLE Player (
     id serial PRIMARY KEY NOT NULL,
     name text NOT NULL,
-    realm int4,
     debuted boolean NOT NULL,
+    waiting_for_train boolean NOT NULL DEFAULT FALSE,
     message_acl bytea NOT NULL,
     online_acl bytea NOT NULL,
     location_acl bytea NOT NULL,
@@ -40,6 +40,7 @@ CREATE INDEX remoteplayerchat_by_timestamp ON remoteplayerchat (player, remote_s
 CREATE TABLE Realm (
     id serial PRIMARY KEY NOT NULL,
     principal text UNIQUE NOT NULL,
+    train int4,
     name text NOT NULL,
     owner int4 NOT NULL,
     asset text NOT NULL,
@@ -57,9 +58,6 @@ CREATE TABLE Realm (
 );
 
 SELECT diesel_manage_updated_at('Realm');
-
-ALTER TABLE Player
-    ADD CONSTRAINT player_realm_id FOREIGN KEY (realm) REFERENCES Realm (id);
 
 CREATE TABLE RealmChat (
     realm int4 NOT NULL,
@@ -98,6 +96,12 @@ CREATE TABLE PublicKey (
     public_key bytea NOT NULL,
     PRIMARY KEY (player, name),
     CONSTRAINT host_player_id FOREIGN KEY (player) REFERENCES Player (id)
+);
+
+CREATE TABLE RealmTrain (
+   asset text NOT NULL,
+   allowed_first BOOLEAN NOT NULL,
+   PRIMARY KEY (asset)
 );
 
 CREATE VIEW LastMessages AS

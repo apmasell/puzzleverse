@@ -326,6 +326,10 @@ pub enum ClientRequest {
   RealmsList(RealmSource),
   /// List any servers that are in contact with the local server
   Servers,
+  /// Add a realm asset identifier to the train
+  ///
+  /// The asset will be check to see if it is train-compatible. If it is not, the request will be ignored.
+  TrainAdd(String, bool),
   /// Requests that are tied to being in a particular realm. This mostly matters when a player is accessing a realm on another server as these requests will be proxied to the remote server without modification. When a player is first sent to a realm, it is told to download the assets. Once a player has all the assets, it should send any in-realm command to be actually moved into the realm. This will trigger the server to send the current realm state.
   InRealm(RealmRequest),
 }
@@ -553,6 +557,8 @@ pub struct Realm {
   pub id: String,
   /// The friendly name for this realm
   pub name: String,
+  /// If the realm is part of a train, then the position in the train
+  pub train: Option<u16>,
 }
 
 /// The access control type for a realm
