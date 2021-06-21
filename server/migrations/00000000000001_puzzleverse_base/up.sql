@@ -104,7 +104,7 @@ CREATE TABLE RealmTrain (
    PRIMARY KEY (asset)
 );
 
-CREATE VIEW LastMessages AS
+CREATE VIEW LastMessage AS
     SELECT player AS id, MAX(created) AS last_time, remote_player || '@' || remote_server AS principal
       FROM RemotePlayerChat
       WHERE state = 'r'

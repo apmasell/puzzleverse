@@ -1,6 +1,6 @@
 DROP INDEX localplayerchat_by_timestamp;
 DROP INDEX remoteplayerchat_by_timestamp;
-DROP VIEW LastMessages;
+DROP VIEW LastMessage;
 
 DROP TABLE PublicKey;
 DROP TABLE Bookmark;
