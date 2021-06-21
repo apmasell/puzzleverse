@@ -235,7 +235,7 @@ pub enum CharacterMotion<T> {
   },
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub enum ClientRequest {
   /// Request the contents of a particular asset, using its hash ID
   AssetPull {
@@ -726,7 +726,7 @@ pub enum RealmSource {
   RemoteServer(String),
 }
 /// The realm that has been selected
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub enum RealmTarget {
   Home,
   LocalRealm(String),
