@@ -459,11 +459,11 @@ pub enum InteractionType {
 }
 /// The data structure for performing a password-authenticated request
 #[derive(Serialize, Deserialize, Debug)]
-pub struct PasswordRequest {
+pub struct PasswordRequest<T: AsRef<str>> {
   /// The player's login name
-  pub username: String,
+  pub username: T,
   /// The player's raw password; it is the client's responsibility to ensure the channel is encrypted or warn the player
-  pub password: String,
+  pub password: T,
 }
 /// When querying the online status and location of another player, this is the response
 #[derive(Serialize, Deserialize, Clone, Debug)]

@@ -63,7 +63,7 @@ where
           eprintln!("Failed to aggregate body: {}", e);
           AuthResult::Failure
         }
-        Ok(whole_body) => match serde_json::from_reader::<_, puzzleverse_core::PasswordRequest>(whole_body.reader()) {
+        Ok(whole_body) => match serde_json::from_reader::<_, puzzleverse_core::PasswordRequest<String>>(whole_body.reader()) {
           Err(e) => AuthResult::Page(http::Response::builder().status(http::StatusCode::BAD_REQUEST).body(e.to_string().into())),
           Ok(data) => {
             if self.check(&data.username, &data.password).await {
