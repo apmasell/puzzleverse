@@ -1233,7 +1233,7 @@ impl Server {
         let mut active_players = self.player_states.write().await;
         let (player, old_socket) = match self.players.write().await.entry(player_name.to_string()) {
           std::collections::hash_map::Entry::Vacant(entry) => {
-            let id = self.player_states.write().await.insert(new_state(
+            let id = active_players.insert(new_state(
               &player_name,
               &self,
               debuted,
