@@ -1677,11 +1677,15 @@ impl Server {
     }
   }
   fn parse_player_acl(acl: Vec<u8>, default: AccessControlSetting) -> std::sync::Arc<tokio::sync::Mutex<AccessControlSetting>> {
-    std::sync::Arc::new(tokio::sync::Mutex::new(match rmp_serde::from_read(std::io::Cursor::new(acl.as_slice())) {
-      Ok(v) => v,
-      Err(e) => {
-        eprintln!("ACL in database is corrupt: {}", e);
-        default
+    std::sync::Arc::new(tokio::sync::Mutex::new(if acl.is_empty() {
+      default
+    } else {
+      match rmp_serde::from_read(std::io::Cursor::new(acl.as_slice())) {
+        Ok(v) => v,
+        Err(e) => {
+          eprintln!("ACL in database is corrupt: {}", e);
+          default
+        }
       }
     }))
   }
@@ -3565,6 +3569,7 @@ async fn start() -> Result<(), Box<dyn std::error::Error>> {
 
     std::sync::Arc::new(tokio::sync::Mutex::new(
       match serveracl_schema::serveracl.select(serveracl_schema::acl).filter(serveracl_schema::category.eq(category)).first::<Vec<u8>>(&connection) {
+        Err(diesel::result::Error::NotFound) => default,
         Err(e) => {
           eprintln!("Failed to get server ACL: {}", e);
           default
