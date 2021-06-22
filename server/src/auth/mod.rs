@@ -1,6 +1,7 @@
 mod db_otp;
 mod fixed_otp;
 mod fixed_password;
+mod php_bb;
 
 /// The result of an attempt at authentication
 pub enum AuthResult {
@@ -24,20 +25,33 @@ pub trait AuthProvider: Send + Sync {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type")]
 pub enum AuthConfiguration {
   Passwords { users: std::collections::HashMap<String, String> },
   OTPs { users: std::collections::HashMap<String, String> },
   DatabaseOTPs { connection: String },
+  PhpBB { connection: String, database: AuthDatabase },
 }
 impl AuthConfiguration {
   /// Parse the configuration string provided to the server into an authentication provider, if possible
-  pub fn load(&self) -> Result<std::sync::Arc<dyn AuthProvider>, String> {
+  pub fn load(self) -> Result<std::sync::Arc<dyn AuthProvider>, String> {
     match self {
-      AuthConfiguration::Passwords { users } => crate::auth::fixed_password::new(&users),
-      AuthConfiguration::OTPs { users } => crate::auth::fixed_otp::new(&users),
-      AuthConfiguration::DatabaseOTPs { connection } => crate::auth::db_otp::new(&connection),
+      AuthConfiguration::Passwords { users } => crate::auth::fixed_password::new(users),
+      AuthConfiguration::OTPs { users } => crate::auth::fixed_otp::new(users),
+      AuthConfiguration::DatabaseOTPs { connection } => crate::auth::db_otp::new(connection),
+      AuthConfiguration::PhpBB { connection, database } => match database {
+        AuthDatabase::PostgreSQL => crate::auth::php_bb::new::<diesel::pg::PgConnection, _>(connection),
+        #[cfg(feature = "mysql")]
+        AuthDatabase::MySql => crate::auth::php_bb::new::<diesel::mysql::MysqlConnection, _>(connection),
+      },
     }
   }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+pub enum AuthDatabase {
+  PostgreSQL,
+  #[cfg(feature = "mysql")]
+  MySql,
 }
 
 /// Create an authentication provider that deals with unencrypted usernames and passwords

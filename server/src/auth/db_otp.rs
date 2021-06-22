@@ -3,7 +3,7 @@ struct DatabaseOTPs {
   connection: r2d2::Pool<diesel::r2d2::ConnectionManager<diesel::pg::PgConnection>>,
 }
 /// Create a simple OTP store
-pub fn new(database_url: &str) -> Result<std::sync::Arc<dyn crate::auth::AuthProvider>, String> {
+pub fn new(database_url: String) -> Result<std::sync::Arc<dyn crate::auth::AuthProvider>, String> {
   let manager = diesel::r2d2::ConnectionManager::<diesel::pg::PgConnection>::new(database_url);
   Ok(std::sync::Arc::new(DatabaseOTPs {
     connection: r2d2::Pool::builder().build(manager).map_err(|e| format!("Failed to create OTP database connection: {}", e))?,
@@ -17,6 +17,7 @@ impl crate::auth::OTPStore for DatabaseOTPs {
       Ok(db_connection) => {
         match auth_otp_schema::authotp.select(auth_otp_schema::code).filter(auth_otp_schema::name.eq(username)).get_results(&db_connection) {
           Ok(results) => results,
+          Err(diesel::result::Error::NotFound) => vec![],
           Err(e) => {
             eprintln!("Failed to fetch OTPs for {}: {}", username, e);
             vec![]

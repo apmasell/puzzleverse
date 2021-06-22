@@ -2,8 +2,8 @@ struct FixedOTPs {
   secrets: std::collections::HashMap<String, String>,
 }
 /// Create a simple OTP store
-pub fn new(secrets: &std::collections::HashMap<String, String>) -> Result<std::sync::Arc<dyn crate::auth::AuthProvider>, String> {
-  Ok(std::sync::Arc::new(FixedOTPs { secrets: secrets.clone() }))
+pub fn new(secrets: std::collections::HashMap<String, String>) -> Result<std::sync::Arc<dyn crate::auth::AuthProvider>, String> {
+  Ok(std::sync::Arc::new(FixedOTPs { secrets }))
 }
 #[async_trait::async_trait]
 impl crate::auth::OTPStore for FixedOTPs {

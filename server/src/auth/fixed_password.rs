@@ -8,6 +8,6 @@ impl crate::auth::Password for FixedPasswords {
   }
 }
 /// Create a simple password store
-pub fn new(secrets: &std::collections::HashMap<String, String>) -> Result<std::sync::Arc<dyn crate::auth::AuthProvider>, String> {
-  Ok(std::sync::Arc::new(FixedPasswords { secrets: secrets.clone() }))
+pub fn new(secrets: std::collections::HashMap<String, String>) -> Result<std::sync::Arc<dyn crate::auth::AuthProvider>, String> {
+  Ok(std::sync::Arc::new(FixedPasswords { secrets }))
 }

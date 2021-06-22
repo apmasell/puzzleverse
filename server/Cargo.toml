@@ -5,7 +5,9 @@ authors = ['Andre Masella <andre@masella.name>']
 edition = '2018'
 
 [features]
+default = ["mysql"]
 wasm-client = []
+mysql = ['diesel/mysql']
 
 [dependencies]
 argparse = '^0.2'
@@ -30,6 +32,7 @@ notify = '^4.0'
 num-integer = '^0.1'
 openssl = '^0.10'
 otpauth = '^0.4'
+phpbb-pwhash = '^0.1'
 prometheus = '^0.11'
 r2d2 = '^0.8'
 rand = '^0.8'
@@ -48,6 +51,7 @@ features = ['serde']
 
 [dependencies.diesel]
 version = '^1.4'
+default-features = false
 features = [
     'chrono',
     'postgres',
