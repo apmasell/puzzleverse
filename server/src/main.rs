@@ -78,7 +78,6 @@ static ref DEFAULT_LOCAL_ONLY_ACCESS: Vec<u8> = {
     rmp_serde::encode::to_vec(&value).unwrap()
 };
 }
-const DEFAULT_HOME: &str = "DEFAULT_HOME";
 pub type AccessControlSetting = (puzzleverse_core::AccessDefault, Vec<puzzleverse_core::AccessControl>);
 
 pub enum AssetPullAction {
@@ -601,7 +600,7 @@ impl Server {
     }
   }
 
-  async fn find_or_create_realm<
+  async fn find_realm<
     P: diesel::Expression<SqlType = diesel::sql_types::Bool>
       + diesel::expression::NonAggregate
       + diesel::expression::AppearsOnTable<schema::realm::table>
@@ -612,7 +611,6 @@ impl Server {
     player_id: PlayerKey,
     player_name: &str,
     player_server: Option<String>,
-    create_asset: Option<(&'static str, String)>,
     predicate: P,
   ) -> (player_state::Goal, Option<puzzleverse_core::RealmChange>) {
     let mut realms = self.realms.lock().await;
@@ -627,32 +625,7 @@ impl Server {
         .optional()
     };
     match candidate {
-      Ok(None) => match create_asset {
-        Some((asset, owner)) => {
-          let result = {
-            let db_connection = self.db_pool.get().unwrap();
-            Server::create_realm(&db_connection, &asset, &owner, None, None, None)
-          };
-          match result {
-            Err(e) => {
-              eprintln!("Failed to create {} for {}: {}", &asset, &owner, e);
-              (player_state::Goal::Undecided, Some(puzzleverse_core::RealmChange::Denied))
-            }
-            Ok(principal) => {
-              let current = self.move_epoch.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-              let load = self
-                .find_asset(&asset, AssetPullAction::LoadRealm(principal.clone(), std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(1))))
-                .await;
-              realms.insert(principal.clone(), RealmKind::WaitingAsset { asset: asset.to_string(), waiters: vec![(player_id, current)] });
-              if load {
-                self.clone().load_realm(principal).await;
-              }
-              (player_state::Goal::ResolvingLink(current), None)
-            }
-          }
-        }
-        None => (player_state::Goal::Undecided, Some(puzzleverse_core::RealmChange::Denied)),
-      },
+      Ok(None) => (player_state::Goal::Undecided, Some(puzzleverse_core::RealmChange::Denied)),
       Ok(Some((principal, asset))) => match realms.entry(principal.clone()) {
         std::collections::hash_map::Entry::Occupied(mut e) => match e.get_mut() {
           RealmKind::Loaded(key) => match self.realm_states.read().await.get(key.clone()) {
@@ -3373,22 +3346,13 @@ impl Server {
     match target {
       ReleaseTarget::Home => {
         use crate::schema::realm::dsl as realm_schema;
-        self
-          .clone()
-          .find_or_create_realm(
-            player_id.clone(),
-            player_name,
-            server_name,
-            Some((DEFAULT_HOME, player_name.to_string())),
-            realm_schema::owner.eq(db_id).and(realm_schema::train.eq(0)),
-          )
-          .await
+        self.clone().find_realm(player_id.clone(), player_name, server_name, realm_schema::owner.eq(db_id).and(realm_schema::train.eq(0))).await
       }
       ReleaseTarget::Transit => (player_state::Goal::Undecided, Some(puzzleverse_core::RealmChange::Denied)),
       ReleaseTarget::Realm(realm, server_name) => {
         if &server_name == &self.name {
           use crate::schema::realm::dsl as realm_schema;
-          self.clone().find_or_create_realm(player_id.clone(), player_name, Some(server_name), None, realm_schema::principal.eq(realm)).await
+          self.clone().find_realm(player_id.clone(), player_name, Some(server_name), realm_schema::principal.eq(realm)).await
         } else {
           // Request hand-off to server
           let player = player_name.to_string();
