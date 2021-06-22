@@ -154,7 +154,7 @@ pub enum AuthScheme {
 /// The types of assets the server will store for the client
 ///
 /// This do not necessarily map to the asset's real type. This is a more friendly version for tracking user preferences; in fact, players are not assets, though identified by short strings.
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq, Hash, Copy)]
 pub enum BookmarkType {
   Asset,
   ConsensualEmote,
@@ -369,7 +369,7 @@ pub enum ClientResponse {
   /// The status of a direct message that was sent
   DirectMessageReceipt { id: i32, status: DirectMessageStatus },
   /// The last message receipt time for all players this player has received messages from
-  DirectMessageStats { stats: std::collections::HashMap<String, chrono::DateTime<chrono::Utc>> },
+  DirectMessageStats { stats: std::collections::HashMap<String, chrono::DateTime<chrono::Utc>>, last_login: chrono::DateTime<chrono::Utc> },
   /// All the direct messages in a particular time frame requested
   DirectMessages { player: String, messages: Vec<DirectMessage> },
 

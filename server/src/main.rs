@@ -2223,19 +2223,29 @@ impl Server {
             false
           }
           puzzleverse_core::ClientRequest::DirectMessageStats => {
-            let query_result = {
-              let db_connection = self.db_pool.get().unwrap();
+            fn extract_stats(
+              server: &Server,
+              db_id: i32,
+            ) -> diesel::QueryResult<(Vec<(String, chrono::DateTime<chrono::Utc>)>, chrono::DateTime<chrono::Utc>)> {
+              let db_connection = server.db_pool.get().unwrap();
+              use crate::schema::player::dsl as player_schema;
               use crate::views::lastmessage::dsl as lastmessage_schema;
-              lastmessage_schema::lastmessage
+              let stats = lastmessage_schema::lastmessage
                 .select((lastmessage_schema::principal, lastmessage_schema::last_time))
                 .filter(lastmessage_schema::id.eq(db_id))
-                .load::<(String, chrono::DateTime<chrono::Utc>)>(&db_connection)
+                .load::<(String, chrono::DateTime<chrono::Utc>)>(&db_connection)?;
+              let last_login = player_schema::player.select(player_schema::last_login).filter(player_schema::id.eq(db_id)).first::<chrono::DateTime<
+                chrono::Utc,
+              >>(
+                &db_connection
+              )?;
+              Ok((stats, last_login))
             };
-            match query_result {
-              Ok(mut stats) => {
+            match extract_stats(self, db_id) {
+              Ok((stats, last_login)) => {
                 mutable_player_state
                   .connection
-                  .send_local(puzzleverse_core::ClientResponse::DirectMessageStats { stats: stats.drain(..).collect() })
+                  .send_local(puzzleverse_core::ClientResponse::DirectMessageStats { stats: stats.into_iter().collect(), last_login })
                   .await
               }
               Err(e) => eprintln!("Failed to fetch messages stats for {}: {}", &player_name, e),
