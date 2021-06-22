@@ -762,6 +762,9 @@ pub enum ValueSelector<T> {
     piece_name: String,
   },
 }
+
+pub const CAPABILITIES: &[&str] = &["base"];
+
 /// Check if an access control rule applies
 ///
 /// * `acls` - the access control list to use

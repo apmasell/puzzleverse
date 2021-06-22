@@ -78,8 +78,6 @@ static ref DEFAULT_LOCAL_ONLY_ACCESS: Vec<u8> = {
     rmp_serde::encode::to_vec(&value).unwrap()
 };
 }
-const CAPABILITIES: &[&str] = &["base"];
-
 const DEFAULT_HOME: &str = "DEFAULT_HOME";
 pub type AccessControlSetting = (puzzleverse_core::AccessDefault, Vec<puzzleverse_core::AccessControl>);
 
@@ -2095,7 +2093,7 @@ impl Server {
             mutable_player_state
               .connection
               .send_local(puzzleverse_core::ClientResponse::Capabilities {
-                server_capabilities: CAPABILITIES.iter().map(|s| s.to_string()).collect(),
+                server_capabilities: puzzleverse_core::CAPABILITIES.iter().map(|s| s.to_string()).collect(),
               })
               .await;
             false
