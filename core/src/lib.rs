@@ -292,6 +292,12 @@ pub enum ClientRequest {
   Quit,
   /// Try to get the online status and location of another player
   PlayerCheck(String),
+  /// Erases a player from the server
+  ///
+  /// If the player is currently active, they are kicked offline. All of their realms and chats will be deleted. This does *not* prevent them from logging in again. They must also be removed from the authentication provider.
+  ///
+  /// Only administrators can perform this command.
+  PlayerDelete(String),
 
   /// Adds a new public key for this player to login with. If the name is already used, this key will replace it.
   PublicKeyAdd {

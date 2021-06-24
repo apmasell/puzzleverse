@@ -2240,7 +2240,7 @@ impl Server {
                 &db_connection
               )?;
               Ok((stats, last_login))
-            };
+            }
             match extract_stats(self, db_id) {
               Ok((stats, last_login)) => {
                 mutable_player_state
@@ -2289,6 +2289,78 @@ impl Server {
             }
             false
           }
+          puzzleverse_core::ClientRequest::PlayerDelete(target_player) => {
+            if {
+              let acl = &self.admin_acl.lock().await;
+              (*acl).0.check::<&str, _, _>(acl.1.iter(), player_name, &None, &self.name)
+            } {
+              let should_disconnect = &target_player == player_name;
+              let server = self.clone();
+              tokio::spawn(async move {
+                let mut players = server.players.write().await;
+                let mut player_states = server.player_states.write().await;
+                let mut realms = server.realms.lock().await;
+                let mut realm_states = server.realm_states.write().await;
+                let db_connection = server.db_pool.get().unwrap();
+                let queue = server.move_queue.lock().await;
+                let dead_player_id = players.remove(&target_player);
+                if let Some(player_id) = dead_player_id {
+                  player_states.remove(player_id);
+                }
+                let mut dead_realms = Vec::new();
+                for (realm_key, realm_state) in realm_states.iter_mut() {
+                  if &realm_state.owner == &target_player {
+                    let puzzle_state = realm_state.puzzle_state.lock().await;
+                    for (player_id, _) in puzzle_state.active_players.iter() {
+                      if Some(player_id) != dead_player_id.as_ref() {
+                        if let Err(e) = queue.send(RealmMove::ToHome(player_id.clone())).await {
+                          eprintln!("Failed to send player home: {}", e);
+                        }
+                      }
+                    }
+                    dead_realms.push(realm_key.clone());
+                    realms.remove(&realm_state.id);
+                  }
+                }
+                for realm_key in dead_realms.into_iter() {
+                  realm_states.remove(realm_key);
+                }
+                if let Err(e) = db_connection.transaction::<(), diesel::result::Error, _>(|| {
+                  use schema::bookmark::dsl as bookmark_schema;
+                  use schema::localplayerchat::dsl as localplayerchat_schema;
+                  use schema::player::dsl as player_schema;
+                  use schema::publickey::dsl as publickey_schema;
+                  use schema::realm::dsl as realm_schema;
+                  use schema::realmchat::dsl as realmchat_schema;
+                  use schema::remoteplayerchat::dsl as remoteplayerchat_schema;
+                  diesel::delete(
+                    localplayerchat_schema::localplayerchat
+                      .filter(localplayerchat_schema::sender.eq(&db_id).or(localplayerchat_schema::recipient.eq(&db_id))),
+                  )
+                  .execute(&db_connection)?;
+                  diesel::delete(remoteplayerchat_schema::remoteplayerchat.filter(remoteplayerchat_schema::player.eq(&db_id)))
+                    .execute(&db_connection)?;
+                  diesel::delete(
+                    realmchat_schema::realmchat
+                      .filter(realmchat_schema::realm.eq_any(realm_schema::realm.select(realm_schema::id).filter(realm_schema::owner.eq(&db_id)))),
+                  )
+                  .execute(&db_connection)?;
+                  diesel::delete(realm_schema::realm.filter(realm_schema::owner.eq(&db_id))).execute(&db_connection)?;
+                  diesel::delete(bookmark_schema::bookmark.filter(bookmark_schema::player.eq(&db_id))).execute(&db_connection)?;
+                  diesel::delete(publickey_schema::publickey.filter(publickey_schema::player.eq(&db_id))).execute(&db_connection)?;
+                  diesel::delete(player_schema::player.filter(player_schema::id.eq(&db_id))).execute(&db_connection)?;
+
+                  Ok(())
+                }) {
+                  eprintln!("Failed to remove player {}: {}", &target_player, e);
+                }
+              });
+              should_disconnect
+            } else {
+              false
+            }
+          }
+
           puzzleverse_core::ClientRequest::PublicKeyAdd { name, der } => {
             if let Ok(_) = openssl::pkey::PKey::public_key_from_der(&der) {
               use schema::publickey::dsl as publickey_dsl;
