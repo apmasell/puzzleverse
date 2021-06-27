@@ -12,6 +12,9 @@ CREATE TABLE Player (
     created timestamp WITH time zone NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE INDEX player_name ON player(name);
+CREATE INDEX player_waiting_for_train ON player(waiting_for_train);
+
 CREATE TABLE LocalPlayerChat (
     sender int4 NOT NULL,
     recipient int4 NOT NULL,
@@ -22,6 +25,7 @@ CREATE TABLE LocalPlayerChat (
     CONSTRAINT local_playerchat_recipient_player_id FOREIGN KEY (recipient) REFERENCES Player (id)
 );
 
+CREATE INDEX localplayerchat_recipient ON localplayerchat(recipient);
 CREATE INDEX localplayerchat_by_timestamp ON localplayerchat (sender, recipient, created);
 
 CREATE TABLE RemotePlayerChat (
@@ -57,6 +61,11 @@ CREATE TABLE Realm (
     CONSTRAINT realm_only_per_player UNIQUE (owner, asset)
 );
 
+CREATE INDEX realm_asset ON realm(asset);
+CREATE INDEX realm_in_directory ON realm(in_directory);
+CREATE INDEX realm_owner_train ON realm(owner, train);
+CREATE INDEX realm_principal ON realm(principal);
+
 SELECT diesel_manage_updated_at('Realm');
 
 CREATE TABLE RealmChat (
@@ -83,15 +92,17 @@ CREATE TABLE AuthOTP (
 );
 
 CREATE TABLE Bookmark (
-	  player int4 NOT NULL,
+    player int4 NOT NULL,
     asset text NOT NULL,
     kind varchar(1) NOT NULL,
     PRIMARY KEY(player, asset),
     CONSTRAINT bookmark_player_id FOREIGN KEY (player) REFERENCES Player (id)
 );
 
+CREATE INDEX bookmark_player_kind ON bookmark(player, kind);
+
 CREATE TABLE PublicKey (
-	  player int4 NOT NULL,
+    player int4 NOT NULL,
     name text NOT NULL,
     public_key bytea NOT NULL,
     PRIMARY KEY (player, name),
