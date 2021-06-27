@@ -93,6 +93,11 @@ type OutgoingConnection<T> = futures::sink::With<
   futures::future::Ready<Result<tokio_tungstenite::tungstenite::protocol::Message, tungstenite::Error>>,
   fn(T) -> futures::future::Ready<Result<tokio_tungstenite::tungstenite::protocol::Message, tungstenite::Error>>,
 >;
+
+enum OutstandingId {
+  Bookmarks { player: PlayerKey, results: std::collections::HashMap<RemoteKey, Vec<puzzleverse_core::Realm>> },
+  Manual { player: PlayerKey, realm: String, server: String },
+}
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 struct PlayerClaim {
   exp: usize,
@@ -131,6 +136,7 @@ enum RemoteConnection {
 struct RemoteState {
   connection: tokio::sync::Mutex<RemoteConnection>,
   interested_in_list: tokio::sync::Mutex<std::collections::HashSet<PlayerKey>>,
+  interested_in_ids: tokio::sync::Mutex<std::collections::HashMap<i32, std::sync::Arc<tokio::sync::Mutex<OutstandingId>>>>,
   name: String,
 }
 /// Messages exchanged between servers; all though there is a client/server relationship implied by Web Sockets, the connection is peer-to-peer, therefore, there is no distinction between requests and responses in this structure
@@ -154,8 +160,12 @@ enum RemoteMessage {
   RealmResponse { player: String, response: puzzleverse_core::RealmResponse },
   /// List realms that are in the public directory for this server
   RealmsList,
+  /// List realms that exist for the given realm identifiers
+  RealmsListIds(i32, Vec<String>),
   /// The realms that are available in the public directory on this server
   RealmsAvailable(Vec<puzzleverse_core::Realm>),
+  /// The realms that are available when queried by identifier
+  RealmsAvailableIds(i32, Vec<puzzleverse_core::Realm>),
   /// For a visitor, indicate what assets the client will require
   VisitorCheckAssets { player: String, assets: Vec<String> },
   /// Releases control of a player to the originating server
@@ -191,6 +201,7 @@ pub struct Server {
   authentication: std::sync::Arc<dyn auth::AuthProvider>,
   /// A pool of database connections to be used as required
   db_pool: r2d2::Pool<diesel::r2d2::ConnectionManager<diesel::pg::PgConnection>>,
+  id_sequence: std::sync::atomic::AtomicI32,
   jwt_decoding_key: jsonwebtoken::DecodingKey<'static>,
   /// The key to create JWT for users during authentication
   jwt_encoding_key: jsonwebtoken::EncodingKey,
@@ -515,7 +526,9 @@ impl Server {
         realm_schema::train.eq(train.map(|t| t as i32)),
       ))
       .returning(realm_schema::principal)
-      .on_conflict_do_nothing()
+      .on_conflict((realm_schema::owner, realm_schema::asset))
+      .do_update()
+      .set(realm_schema::updated_at.eq(chrono::Utc::now()))
       .get_result::<String>(db_connection)
   }
   async fn debut(self: &Server, player: &str) {
@@ -994,6 +1007,7 @@ impl Server {
             let remote_id = active_states.insert(RemoteState {
               connection: tokio::sync::Mutex::new(new_state),
               interested_in_list: tokio::sync::Mutex::new(std::collections::HashSet::new()),
+              interested_in_ids: tokio::sync::Mutex::new(std::collections::HashMap::new()),
               name: server_claim.name.clone(),
             });
             entry.insert(remote_id.clone());
@@ -1004,6 +1018,7 @@ impl Server {
               let remote_id = active_states.insert(RemoteState {
                 connection: tokio::sync::Mutex::new(new_state),
                 interested_in_list: tokio::sync::Mutex::new(std::collections::HashSet::new()),
+                interested_in_ids: tokio::sync::Mutex::new(std::collections::HashMap::new()),
                 name: server_claim.name.clone(),
               });
               entry.insert(remote_id.clone());
@@ -1079,6 +1094,7 @@ impl Server {
       + diesel::query_builder::QueryId,
   >(
     &self,
+    include_train: bool,
     predicate: P,
   ) -> Vec<puzzleverse_core::Realm> {
     let db_connection = self.db_pool.get().unwrap();
@@ -1089,7 +1105,15 @@ impl Server {
       Option<i32>,
     )>(&db_connection)
     {
-      Ok(entries) => entries.into_iter().map(|(id, name, train)| puzzleverse_core::Realm { id, name, train: train.map(|t| t as u16) }).collect(),
+      Ok(entries) => entries
+        .into_iter()
+        .map(|(id, name, train)| puzzleverse_core::Realm {
+          id,
+          name,
+          server: Some(self.name.clone()),
+          train: if include_train { train.map(|t| t as u16) } else { None },
+        })
+        .collect(),
       Err(e) => {
         eprintln!("Failed to get realms from DB: {}", e);
         vec![]
@@ -1674,6 +1698,7 @@ impl Server {
             let state = RemoteState {
               connection: tokio::sync::Mutex::new(RemoteConnection::Dead(chrono::Utc::now(), Vec::new())),
               interested_in_list: tokio::sync::Mutex::new(std::collections::HashSet::new()),
+              interested_in_ids: tokio::sync::Mutex::new(std::collections::HashMap::new()),
               name: remote_name,
             };
             let result = func(remote_id, &state).await;
@@ -1688,6 +1713,7 @@ impl Server {
         let state = RemoteState {
           connection: tokio::sync::Mutex::new(RemoteConnection::Dead(chrono::Utc::now(), Vec::new())),
           interested_in_list: tokio::sync::Mutex::new(std::collections::HashSet::new()),
+          interested_in_ids: tokio::sync::Mutex::new(std::collections::HashMap::new()),
           name: remote_name,
         };
         let id = states.insert(state);
@@ -2418,6 +2444,16 @@ impl Server {
                 match realm {
                   puzzleverse_core::RealmTarget::Home => RealmMove::ToTrain { player: player.clone(), owner: player_name.into(), train: 0 },
                   puzzleverse_core::RealmTarget::LocalRealm(name) => RealmMove::ToExistingRealm { player: player.clone(), realm: name, server: None },
+                  puzzleverse_core::RealmTarget::PersonalRealm(asset) => {
+                    let db_connection = self.db_pool.get().unwrap();
+                    match Server::create_realm(&db_connection, &asset, player_name, None, None, None) {
+                      Ok(name) => RealmMove::ToExistingRealm { player: player.clone(), realm: name, server: None },
+                      Err(e) => {
+                        eprintln!("Failed to create realm {} for {}: {}", &asset, player_name, e);
+                        RealmMove::ToHome(player.clone())
+                      }
+                    }
+                  }
                   puzzleverse_core::RealmTarget::RemoteRealm { realm, server: server_name } => {
                     server_name.to_lowercase();
                     RealmMove::ToExistingRealm {
@@ -2541,7 +2577,7 @@ impl Server {
                   .connection
                   .send_local(puzzleverse_core::ClientResponse::RealmsAvailable {
                     display: puzzleverse_core::RealmSource::Personal,
-                    realms: self.list_realms(realm_schema::owner.eq(db_id)),
+                    realms: self.list_realms(true, realm_schema::owner.eq(db_id)),
                   })
                   .await
               }
@@ -2551,7 +2587,7 @@ impl Server {
                   .connection
                   .send_local(puzzleverse_core::ClientResponse::RealmsAvailable {
                     display: puzzleverse_core::RealmSource::LocalServer,
-                    realms: self.list_realms(realm_schema::in_directory),
+                    realms: self.list_realms(false, realm_schema::in_directory),
                   })
                   .await
               }
@@ -2563,7 +2599,7 @@ impl Server {
                     .connection
                     .send_local(puzzleverse_core::ClientResponse::RealmsAvailable {
                       display: puzzleverse_core::RealmSource::RemoteServer(remote_name),
-                      realms: self.list_realms(realm_schema::in_directory),
+                      realms: self.list_realms(false, realm_schema::in_directory),
                     })
                     .await
                 } else {
@@ -2578,6 +2614,131 @@ impl Server {
                     .await;
                 }
               }
+              puzzleverse_core::RealmSource::Bookmarks => {
+                use crate::schema::realm::dsl as realm_schema;
+                let mut bookmarks: std::collections::BTreeMap<String, Vec<String>> = {
+                  let db_connection = self.db_pool.get().unwrap();
+                  use crate::schema::bookmark::dsl as bookmark_schema;
+                  let result = bookmark_schema::bookmark
+                    .select(bookmark_schema::asset)
+                    .filter(bookmark_schema::kind.eq(id_for_type(&puzzleverse_core::BookmarkType::Realm)).and(bookmark_schema::player.eq(&db_id)))
+                    .load::<String>(&db_connection);
+                  match result {
+                    Err(diesel::result::Error::NotFound) => Default::default(),
+                    Err(e) => {
+                      eprintln!("Failed to fetch realm bookmarks: {}", e);
+                      Default::default()
+                    }
+                    Ok(urls) => {
+                      let mut realms = std::collections::BTreeMap::new();
+                      for (server, realm) in urls.into_iter().flat_map(|url| {
+                        url
+                          .parse::<puzzleverse_core::RealmTarget>()
+                          .ok()
+                          .map(|target| match target {
+                            puzzleverse_core::RealmTarget::LocalRealm(id) => Some(("".to_string(), id)),
+                            puzzleverse_core::RealmTarget::RemoteRealm { server, realm } => {
+                              server.to_ascii_lowercase();
+                              if &server == &self.name {
+                                Some(("".to_owned(), realm))
+                              } else {
+                                Some((server, realm))
+                              }
+                            }
+                            _ => None,
+                          })
+                          .flatten()
+                          .into_iter()
+                      }) {
+                        match realms.entry(server) {
+                          std::collections::btree_map::Entry::Vacant(v) => {
+                            v.insert(vec![realm]);
+                          }
+                          std::collections::btree_map::Entry::Occupied(mut o) => {
+                            o.get_mut().push(realm);
+                          }
+                        }
+                      }
+                      realms
+                    }
+                  }
+                };
+                let local_bookmarks: std::collections::HashMap<_, _> = bookmarks
+                  .remove("")
+                  .map(|ids| (RemoteKey::default(), self.list_realms(true, realm_schema::principal.eq_any(&ids))))
+                  .into_iter()
+                  .collect();
+                mutable_player_state
+                  .connection
+                  .send_local(puzzleverse_core::ClientResponse::RealmsAvailable {
+                    display: puzzleverse_core::RealmSource::Bookmarks,
+                    realms: local_bookmarks.values().flat_map(|v| v.iter()).cloned().collect(),
+                  })
+                  .await;
+                let response =
+                  std::sync::Arc::new(tokio::sync::Mutex::new(OutstandingId::Bookmarks { player: player.clone(), results: local_bookmarks }));
+
+                for (remote_name, ids) in bookmarks.into_iter() {
+                  let sequence_number = self.id_sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                  let response = response.clone();
+                  self
+                    .perform_on_remote_server(remote_name, move |_, remote| {
+                      Box::pin(async move {
+                        remote.interested_in_ids.lock().await.insert(sequence_number, response);
+                        remote.connection.lock().await.send(RemoteMessage::RealmsListIds(sequence_number, ids)).await
+                      })
+                    })
+                    .await;
+                }
+              }
+              puzzleverse_core::RealmSource::Manual(target) => match target {
+                puzzleverse_core::RealmTarget::Home => {
+                  use crate::schema::realm::dsl as realm_schema;
+                  mutable_player_state
+                    .connection
+                    .send_local(puzzleverse_core::ClientResponse::RealmsAvailable {
+                      realms: self.list_realms(true, realm_schema::owner.eq(&db_id).and(realm_schema::train.eq(1))),
+                      display: puzzleverse_core::RealmSource::Manual(puzzleverse_core::RealmTarget::Home),
+                    })
+                    .await
+                }
+                puzzleverse_core::RealmTarget::LocalRealm(id) => {
+                  use crate::schema::realm::dsl as realm_schema;
+                  mutable_player_state
+                    .connection
+                    .send_local(puzzleverse_core::ClientResponse::RealmsAvailable {
+                      realms: self.list_realms(false, realm_schema::principal.eq(&id)),
+                      display: puzzleverse_core::RealmSource::Manual(puzzleverse_core::RealmTarget::LocalRealm(id)),
+                    })
+                    .await
+                }
+                puzzleverse_core::RealmTarget::PersonalRealm(asset) => {
+                  use crate::schema::realm::dsl as realm_schema;
+                  mutable_player_state
+                    .connection
+                    .send_local(puzzleverse_core::ClientResponse::RealmsAvailable {
+                      realms: self.list_realms(true, realm_schema::owner.eq(&db_id).and(realm_schema::asset.eq(&asset))),
+                      display: puzzleverse_core::RealmSource::Manual(puzzleverse_core::RealmTarget::PersonalRealm(asset)),
+                    })
+                    .await
+                }
+                puzzleverse_core::RealmTarget::RemoteRealm { server, realm } => {
+                  let sequence_number = self.id_sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                  let response = std::sync::Arc::new(tokio::sync::Mutex::new(OutstandingId::Manual {
+                    player: player.clone(),
+                    server: server.clone(),
+                    realm: realm.clone(),
+                  }));
+                  self
+                    .perform_on_remote_server(server, move |_, remote| {
+                      Box::pin(async move {
+                        remote.interested_in_ids.lock().await.insert(sequence_number, response);
+                        remote.connection.lock().await.send(RemoteMessage::RealmsListIds(sequence_number, vec![realm])).await
+                      })
+                    })
+                    .await;
+                }
+              },
             }
             false
           }
@@ -3324,10 +3485,53 @@ impl Server {
           }
         }
       }
+      RemoteMessage::RealmsAvailableIds(id, realms) => {
+        if let Some(remote_state) = self.remote_states.read().await.get(remote_id.clone()) {
+          if let Some(outstanding) = remote_state.interested_in_ids.lock().await.remove(&id) {
+            let mut outstanding = outstanding.lock().await;
+            let (player, response) = match &mut *outstanding {
+              OutstandingId::Bookmarks { player, results } => {
+                results.insert(remote_id.clone(), realms);
+                (
+                  player.clone(),
+                  puzzleverse_core::ClientResponse::RealmsAvailable {
+                    display: puzzleverse_core::RealmSource::Bookmarks,
+                    realms: results.values().flatten().cloned().collect(),
+                  },
+                )
+              }
+              OutstandingId::Manual { player, server, realm } => (
+                player.clone(),
+                puzzleverse_core::ClientResponse::RealmsAvailable {
+                  display: puzzleverse_core::RealmSource::Manual(puzzleverse_core::RealmTarget::RemoteRealm {
+                    server: server.clone(),
+                    realm: realm.clone(),
+                  }),
+                  realms,
+                },
+              ),
+            };
+            if let Some(player_state) = self.player_states.read().await.get(player) {
+              player_state.mutable.lock().await.connection.send_local(response).await;
+            }
+          }
+        }
+      }
       RemoteMessage::RealmsList => {
         if let Some(remote_state) = self.remote_states.read().await.get(remote_id.clone()) {
           use crate::schema::realm::dsl as realm_schema;
-          remote_state.connection.lock().await.send(RemoteMessage::RealmsAvailable(self.list_realms(realm_schema::in_directory))).await;
+          remote_state.connection.lock().await.send(RemoteMessage::RealmsAvailable(self.list_realms(false, realm_schema::in_directory))).await;
+        }
+      }
+      RemoteMessage::RealmsListIds(id, ids) => {
+        if let Some(remote_state) = self.remote_states.read().await.get(remote_id.clone()) {
+          use crate::schema::realm::dsl as realm_schema;
+          remote_state
+            .connection
+            .lock()
+            .await
+            .send(RemoteMessage::RealmsAvailableIds(id, self.list_realms(false, realm_schema::principal.eq_any(&ids))))
+            .await;
         }
       }
       RemoteMessage::VisitorCheckAssets { player, assets } => {
@@ -3655,6 +3859,7 @@ async fn start() -> Result<(), Box<dyn std::error::Error>> {
     message_acl: read_acl(&db_pool, "m", (puzzleverse_core::AccessDefault::Allow, vec![])),
     db_pool,
     move_epoch: std::sync::atomic::AtomicU64::new(0),
+    id_sequence: std::sync::atomic::AtomicI32::new(0),
     startup: chrono::Utc::now(),
   });
   embedded_migrations::run(&*server.db_pool.clone().get().unwrap()).unwrap();

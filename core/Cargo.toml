@@ -7,6 +7,7 @@ edition = '2018'
 [dependencies]
 gltf = '^0.15'
 rmp-serde = '^0.15'
+url = "^0.2"
 
 [dependencies.chrono]
 version = '^0.4'

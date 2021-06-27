@@ -563,6 +563,8 @@ pub struct Realm {
   pub id: String,
   /// The friendly name for this realm
   pub name: String,
+  /// The server that hosts this realm (or none of the local server)
+  pub server: Option<String>,
   /// If the realm is part of a train, then the position in the train
   pub train: Option<u16>,
 }
@@ -722,20 +724,25 @@ pub enum RealmResponse {
   },
 }
 /// When fetching realms from the server, what kind of realms to fetch
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum RealmSource {
   /// Realms owned by the user
   Personal,
+  /// Realms in the player's bookmark list
+  Bookmarks,
   /// Realms marked as public on the local server
   LocalServer,
   /// Public realms on a remote server
   RemoteServer(String),
+  /// Check for a specific realm by identifier
+  Manual(RealmTarget),
 }
 /// The realm that has been selected
-#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq, Hash)]
 pub enum RealmTarget {
   Home,
   LocalRealm(String),
+  PersonalRealm(String),
   RemoteRealm { realm: String, server: String },
 }
 /// Value for an asset
@@ -968,6 +975,60 @@ impl RealmSetting {
           false
         }
       }
+    }
+  }
+}
+impl RealmTarget {
+  pub fn new<T>(realm: impl Into<String>, server: Option<impl Into<String>>) -> Self {
+    match server {
+      None => RealmTarget::LocalRealm(realm.into()),
+      Some(server) => RealmTarget::RemoteRealm { realm: realm.into(), server: server.into() },
+    }
+  }
+  pub fn to_url(&self) -> String {
+    match self {
+      RealmTarget::PersonalRealm(asset) => format!("puzzleverse:~{}", asset),
+      RealmTarget::LocalRealm(id) => format!("puzzleverse:///{}", id),
+      RealmTarget::RemoteRealm { realm, server } => format!("puzzleverse://{}/{}", server, realm),
+      RealmTarget::Home => "puzzleverse:~".to_string(),
+    }
+  }
+}
+pub enum RealmTargetParseError {
+  BadHost,
+  BadPath,
+  BadSchema,
+  UrlError(url::ParseError),
+}
+impl std::str::FromStr for RealmTarget {
+  type Err = RealmTargetParseError;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    match url::UrlParser::new().parse(s) {
+      Ok(url) => {
+        if &url.scheme == "puzzleverse" {
+          if let Some(data) = url.non_relative_scheme_data() {
+            if data == "~" {
+              Ok(RealmTarget::Home)
+            } else if data.starts_with("~") {
+              Ok(RealmTarget::PersonalRealm(data[1..].to_string()))
+            } else {
+              Err(RealmTargetParseError::BadPath)
+            }
+          } else if let Some([path]) = url.path() {
+            match url.host() {
+              None => Ok(RealmTarget::LocalRealm(path.to_string())),
+              Some(url::Host::Domain(host)) => Ok(RealmTarget::RemoteRealm { realm: path.to_string(), server: host.to_string() }),
+              _ => Err(RealmTargetParseError::BadHost),
+            }
+          } else {
+            Err(RealmTargetParseError::BadPath)
+          }
+        } else {
+          Err(RealmTargetParseError::BadSchema)
+        }
+      }
+      Err(e) => Err(RealmTargetParseError::UrlError(e)),
     }
   }
 }
