@@ -2,6 +2,7 @@ mod db_otp;
 mod fixed_otp;
 mod fixed_password;
 mod php_bb;
+mod uru;
 
 /// The result of an attempt at authentication
 pub enum AuthResult {
@@ -31,6 +32,7 @@ pub enum AuthConfiguration {
   OTPs { users: std::collections::HashMap<String, String> },
   DatabaseOTPs { connection: String },
   PhpBB { connection: String, database: AuthDatabase },
+  Uru { connection: String },
 }
 impl AuthConfiguration {
   /// Parse the configuration string provided to the server into an authentication provider, if possible
@@ -44,6 +46,7 @@ impl AuthConfiguration {
         #[cfg(feature = "mysql")]
         AuthDatabase::MySql => crate::auth::php_bb::new::<diesel::mysql::MysqlConnection, _>(connection),
       },
+      AuthConfiguration::Uru { connection } => crate::auth::uru::new(connection),
     }
   }
 }
