@@ -3842,7 +3842,7 @@ async fn start() -> Result<(), Box<dyn std::error::Error>> {
     asset_store: Box::new(puzzleverse_core::asset_store::FileSystemStore::new(&std::path::Path::new(&configuration.asset_store), &[4, 4, 8])),
     outstanding_assets: tokio::sync::Mutex::new(std::collections::HashMap::new()),
     push_assets: tokio::sync::Mutex::new(asset_sender),
-    authentication: configuration.authentication.load().unwrap(),
+    authentication: configuration.authentication.load().await.unwrap(),
     jwt_decoding_key: jsonwebtoken::DecodingKey::from_secret(&jwt_secret).into_static(),
     jwt_encoding_key: jsonwebtoken::EncodingKey::from_secret(&jwt_secret),
     name: configuration.name,

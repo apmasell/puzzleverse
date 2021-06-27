@@ -1,6 +1,7 @@
 mod db_otp;
 mod fixed_otp;
 mod fixed_password;
+mod ldap;
 mod php_bb;
 mod uru;
 
@@ -28,19 +29,23 @@ pub trait AuthProvider: Send + Sync {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type")]
 pub enum AuthConfiguration {
-  Passwords { users: std::collections::HashMap<String, String> },
-  OTPs { users: std::collections::HashMap<String, String> },
   DatabaseOTPs { connection: String },
+  LDAP { url: String, bind_dn: String, bind_pw: String, search_base: String, account_attr: String },
+  OTPs { users: std::collections::HashMap<String, String> },
+  Passwords { users: std::collections::HashMap<String, String> },
   PhpBB { connection: String, database: AuthDatabase },
   Uru { connection: String },
 }
 impl AuthConfiguration {
   /// Parse the configuration string provided to the server into an authentication provider, if possible
-  pub fn load(self) -> Result<std::sync::Arc<dyn AuthProvider>, String> {
+  pub async fn load(self) -> Result<std::sync::Arc<dyn AuthProvider>, String> {
     match self {
-      AuthConfiguration::Passwords { users } => crate::auth::fixed_password::new(users),
-      AuthConfiguration::OTPs { users } => crate::auth::fixed_otp::new(users),
       AuthConfiguration::DatabaseOTPs { connection } => crate::auth::db_otp::new(connection),
+      AuthConfiguration::LDAP { url, bind_dn, bind_pw, search_base, account_attr } => {
+        crate::auth::ldap::new(url, bind_dn, bind_pw, search_base, account_attr).await
+      }
+      AuthConfiguration::OTPs { users } => crate::auth::fixed_otp::new(users),
+      AuthConfiguration::Passwords { users } => crate::auth::fixed_password::new(users),
       AuthConfiguration::PhpBB { connection, database } => match database {
         AuthDatabase::PostgreSQL => crate::auth::php_bb::new::<diesel::pg::PgConnection, _>(connection),
         #[cfg(feature = "mysql")]
