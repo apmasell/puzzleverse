@@ -365,9 +365,6 @@ pub enum ClientResponse {
   /// An unsolicited message that the client will need the provided assets. If the client does
   /// not have them locally, it should pull them.
   CheckAssets { asset: Vec<String> },
-  /// An unsolicited message that the client will need the provided capabilities. If the client
-  /// does not have them locally, it should try to link to a different realm.
-  CheckCapabilities { client_capabilities: Vec<String> },
   /// The current ACLs associated with a realm
   CurrentAccess { target: AccessTarget, acls: Vec<AccessControl>, default: AccessDefault },
   /// A direct message was received
@@ -594,6 +591,8 @@ pub enum RealmChange {
     seed: i32,
     /// Admin controllable parameters for this realm
     settings: std::collections::BTreeMap<String, RealmSetting>,
+    /// The service capabilities required by the realm
+    capabilities: Vec<String>,
   },
   /// The realm that the player requested was not available or the player is not allowed to access it
   Denied,

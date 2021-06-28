@@ -323,7 +323,7 @@ impl RemoteConnection {
 impl Server {
   async fn add_train(self: &std::sync::Arc<Server>, asset: &str, allowed_first: bool) {
     if self
-      .load_realm_description(asset, false, |_, propagation_rules, _, _, _| {
+      .load_realm_description(asset, false, |_, _, propagation_rules, _, _, _| {
         propagation_rules.iter().any(|rule| match rule.propagation_match {
           puzzle::PropagationValueMatcher::EmptyToTrainNext => true,
           _ => false,
@@ -660,6 +660,7 @@ impl Server {
                     server: self.name.clone(),
                     name: realm_state.name.read().await.clone(),
                     asset: realm_state.asset.clone(),
+                    capabilities: realm_state.capabilities.clone(),
                     seed: realm_state.seed,
                     settings: realm_state.puzzle_state.lock().await.settings.clone(),
                   }),
@@ -1279,6 +1280,7 @@ impl Server {
                               self,
                               puzzleverse_core::RealmChange::Success {
                                 asset: realm_state.asset.clone(),
+                                capabilities: realm_state.capabilities.clone(),
                                 name: realm_state.name.read().await.clone(),
                                 realm: realm_state.id.clone(),
                                 seed: realm_state.seed,
@@ -1333,12 +1335,13 @@ impl Server {
             server: self.name.clone(),
             name: state.name.read().await.clone(),
             asset: asset.clone(),
+            capabilities: state.capabilities.clone(),
             seed: state.seed,
             settings: state.puzzle_state.lock().await.settings.clone(),
           };
           let realm_key = self.realm_states.write().await.insert(state);
           match self.realms.lock().await.insert(principal, RealmKind::Loaded(realm_key.clone())) {
-            None => eprintln!("Loaded a realm no was interested in"),
+            None => eprintln!("Loaded a realm no one was interested in"),
             Some(RealmKind::Loaded(_)) => {
               panic!("Replaced an active realm. This should not happen.")
             }
@@ -1374,6 +1377,7 @@ impl Server {
   async fn load_realm_description<
     T,
     F: FnOnce(
+      Vec<String>,
       Vec<Box<dyn crate::puzzle::PuzzleAsset>>,
       Vec<crate::puzzle::PropagationRule>,
       Vec<crate::puzzle::ConsequenceRule>,
@@ -3440,18 +3444,39 @@ impl Server {
         }
       }
       RemoteMessage::RealmChanged { player, change } => {
-        self
-          .send_response_to_player_visiting_remote(
-            remote_id,
-            &server_name,
-            &player,
-            match &change {
-              puzzleverse_core::RealmChange::Success { .. } => None,
-              puzzleverse_core::RealmChange::Denied => Some(player_state::Goal::Undecided),
-            },
-            puzzleverse_core::ClientResponse::RealmChanged(change),
-          )
-          .await;
+        let missing_capabilities: Vec<_> = match &change {
+          puzzleverse_core::RealmChange::Denied => vec![],
+          puzzleverse_core::RealmChange::Success { capabilities, .. } => {
+            capabilities.iter().filter(|c| !puzzleverse_core::CAPABILITIES.contains(&c.as_str())).collect()
+          }
+        };
+        if missing_capabilities.is_empty() {
+          self
+            .send_response_to_player_visiting_remote(
+              remote_id,
+              &server_name,
+              &player,
+              match &change {
+                puzzleverse_core::RealmChange::Success { .. } => None,
+                puzzleverse_core::RealmChange::Denied => Some(player_state::Goal::Undecided),
+              },
+              puzzleverse_core::ClientResponse::RealmChanged(change),
+            )
+            .await;
+        } else {
+          self
+            .send_response_to_player_visiting_remote(
+              remote_id,
+              &server_name,
+              &player,
+              Some(player_state::Goal::Undecided),
+              puzzleverse_core::ClientResponse::RealmChanged(puzzleverse_core::RealmChange::Denied),
+            )
+            .await;
+          if let Some(remote_state) = self.remote_states.read().await.get(remote_id.clone()) {
+            remote_state.connection.lock().await.send(RemoteMessage::VisitorYank(player)).await;
+          }
+        }
       }
       RemoteMessage::RealmRequest { player, request } => {
         let player_id = resolve_remote_player(&self, &remote_id, &player, &server_name).await;
@@ -3551,6 +3576,7 @@ impl Server {
           )
           .await
       }
+
       RemoteMessage::VisitorRelease(player, target) => {
         if let Some(player_id) = self.players.read().await.get(&player) {
           if let Some(playerstate) = self.player_states.read().await.get(*player_id) {

@@ -37,6 +37,7 @@ pub(crate) struct RealmState {
   pub(crate) access_acl: std::sync::Arc<tokio::sync::Mutex<crate::AccessControlSetting>>,
   pub(crate) admin_acl: std::sync::Arc<tokio::sync::Mutex<crate::AccessControlSetting>>,
   pub(crate) asset: String,
+  pub(crate) capabilities: Vec<String>,
   pub(crate) consent_epoch: std::sync::Arc<std::sync::atomic::AtomicI32>,
   pub(crate) db_id: i32,
   pub(crate) id: String,
@@ -341,35 +342,39 @@ impl RealmState {
     let admin_acls: crate::AccessControlSetting = rmp_serde::from_read(std::io::Cursor::new(admin_acls_bin.as_slice())).map_err(LoadError::Serde)?;
     let access_acls: crate::AccessControlSetting =
       rmp_serde::from_read(std::io::Cursor::new(access_acls_bin.as_slice())).map_err(LoadError::Serde)?;
-    let mut puzzle_state = server
-      .load_realm_description(&asset, Err(LoadError::BadRealm), |piece_assets, propagation_rules, consequence_rules, manifold, settings| {
-        let now = chrono::Utc::now();
-        let pieces = if initialised {
-          let mut input = std::io::Cursor::new(puzzle_state_bin.as_slice());
-          crate::puzzle::check_length(&mut input, piece_assets.len() as u32).map_err(LoadError::Rmp)?;
+    let (capabilities, mut puzzle_state) = server
+      .load_realm_description(
+        &asset,
+        Err(LoadError::BadRealm),
+        |capabilities, piece_assets, propagation_rules, consequence_rules, manifold, settings| {
+          let now = chrono::Utc::now();
+          let pieces = if initialised {
+            let mut input = std::io::Cursor::new(puzzle_state_bin.as_slice());
+            crate::puzzle::check_length(&mut input, piece_assets.len() as u32).map_err(LoadError::Rmp)?;
 
-          let mut pieces = Vec::new();
-          for p in piece_assets {
-            pieces.push(p.load(&mut input, &now).map_err(LoadError::Rmp)?);
-          }
-          pieces
-        } else {
-          piece_assets.iter().map(|pa| pa.create(&now)).collect()
-        };
-        let mut state = RealmPuzzleState {
-          pieces,
-          propagation_rules,
-          consequence_rules,
-          manifold,
-          active_players: std::collections::HashMap::new(),
-          committed_movements: vec![],
-          current_states: std::collections::HashMap::new(),
-          last_update: chrono::Utc::now(),
-          settings,
-        };
-        crate::puzzle::prepare_consequences(&mut state, owner.as_ref().unwrap(), server);
-        Ok(state)
-      })
+            let mut pieces = Vec::new();
+            for p in piece_assets {
+              pieces.push(p.load(&mut input, &now).map_err(LoadError::Rmp)?);
+            }
+            pieces
+          } else {
+            piece_assets.iter().map(|pa| pa.create(&now)).collect()
+          };
+          let mut state = RealmPuzzleState {
+            pieces,
+            propagation_rules,
+            consequence_rules,
+            manifold,
+            active_players: std::collections::HashMap::new(),
+            committed_movements: vec![],
+            current_states: std::collections::HashMap::new(),
+            last_update: chrono::Utc::now(),
+            settings,
+          };
+          crate::puzzle::prepare_consequences(&mut state, owner.as_ref().unwrap(), server);
+          Ok((capabilities, state))
+        },
+      )
       .await?;
     for (name, saved_setting) in
       rmp_serde::from_read::<_, std::collections::BTreeMap<String, puzzleverse_core::RealmSetting>>(std::io::Cursor::new(settings_bin.as_slice()))
@@ -474,6 +479,7 @@ impl RealmState {
       access_acl: std::sync::Arc::new(tokio::sync::Mutex::new(access_acls)),
       admin_acl: std::sync::Arc::new(tokio::sync::Mutex::new(admin_acls)),
       asset,
+      capabilities,
       consent_epoch: std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0)),
       db_id,
       id: principal.to_string(),
