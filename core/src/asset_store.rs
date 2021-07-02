@@ -21,20 +21,20 @@ pub enum LoadResult {
 }
 
 /// An asset store backed by a directory on the file system
-pub struct FileSystemStore {
-  root: std::path::PathBuf,
+pub struct FileSystemStore<T: AsRef<std::path::Path> + Send + Sync> {
+  root: T,
   splits: Vec<usize>,
 }
 
-impl FileSystemStore {
+impl<T: AsRef<std::path::Path> + Send + Sync> FileSystemStore<T> {
   /// Create a new file store backed by a directory
   /// * `directory` - the directory root holding the asset files
   /// * `splits` - since most file systems would get angry with a directory containing many files, this creates hierarchical directory structure by breaking up an asset ID. A split of 4, 2, will transform `AAAABBCCCC` into `AAAA/BB/CCCC`
-  pub fn new<P: AsRef<std::path::Path>>(directory: P, splits: &[usize]) -> FileSystemStore {
-    FileSystemStore { root: directory.as_ref().to_path_buf(), splits: Vec::from(splits) }
+  pub fn new(directory: T, splits: &[usize]) -> FileSystemStore<T> {
+    FileSystemStore { root: directory, splits: Vec::from(splits) }
   }
   fn get_path(&self, asset: &str) -> std::path::PathBuf {
-    let mut result = self.root.to_path_buf();
+    let mut result = self.root.as_ref().to_path_buf();
     result.extend(self.splits.iter().scan(0 as usize, |s, &l| match asset.get(*s..(*s + l)) {
       Some(output) => {
         *s += l;
@@ -50,7 +50,7 @@ impl FileSystemStore {
     result
   }
 }
-impl AssetStore for FileSystemStore {
+impl<T: AsRef<std::path::Path> + Send + Sync> AssetStore for FileSystemStore<T> {
   fn check(&self, asset: &str) -> bool {
     std::fs::metadata(&self.get_path(asset)).is_ok()
   }

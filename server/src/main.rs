@@ -3865,7 +3865,10 @@ async fn start() -> Result<(), Box<dyn std::error::Error>> {
   let (asset_sender, asset_receiver) = tokio::sync::mpsc::channel(100);
   let jwt_secret = rand::thread_rng().gen::<[u8; 32]>();
   let server = std::sync::Arc::new(Server {
-    asset_store: Box::new(puzzleverse_core::asset_store::FileSystemStore::new(&std::path::Path::new(&configuration.asset_store), &[4, 4, 8])),
+    asset_store: Box::new(puzzleverse_core::asset_store::FileSystemStore::new(
+      std::path::Path::new(&configuration.asset_store).to_owned(),
+      &[4, 4, 8],
+    )),
     outstanding_assets: tokio::sync::Mutex::new(std::collections::HashMap::new()),
     push_assets: tokio::sync::Mutex::new(asset_sender),
     authentication: configuration.authentication.load().await.unwrap(),

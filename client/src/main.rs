@@ -1,6 +1,11 @@
 use futures::{SinkExt, StreamExt};
 
 #[derive(Default)]
+struct AllowedCapabilities(Vec<&'static str>);
+
+struct AssetManager(Box<dyn puzzleverse_core::asset_store::AssetStore>);
+
+#[derive(Default)]
 struct Bookmarks(std::collections::HashMap<puzzleverse_core::BookmarkType, std::collections::BTreeSet<String>>);
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -23,13 +28,46 @@ enum ConnectionState {
   },
 }
 
+#[derive(Default)]
+struct CurrentAccess(
+  std::collections::HashMap<puzzleverse_core::AccessTarget, (Vec<puzzleverse_core::AccessControl>, puzzleverse_core::AccessDefault)>,
+);
+
 struct DirectMessageInfo {
   messages: Vec<puzzleverse_core::DirectMessage>,
   last_viewed: chrono::DateTime<chrono::Utc>,
   last_message: chrono::DateTime<chrono::Utc>,
+  location: puzzleverse_core::PlayerLocationState,
 }
 #[derive(Default)]
 struct DirectMessages(std::collections::BTreeMap<String, DirectMessageInfo>);
+
+enum InflightOperation {
+  AccessChange(String),
+  AssetCreation(String),
+  DirectMessage(String),
+  DeleteRealm(String),
+  RealmCreation(String),
+  RealmDeletion(String),
+}
+
+#[derive(Default)]
+struct InflightRequests {
+  id: std::sync::atomic::AtomicI32,
+  outstanding: Vec<InflightRequest>,
+}
+
+struct InflightRequest {
+  id: i32,
+  created: chrono::DateTime<chrono::Utc>,
+  operation: InflightOperation,
+}
+
+#[derive(Default)]
+struct KnownServers(std::collections::BTreeSet<String>);
+
+#[derive(Default)]
+struct PublicKeys(std::collections::BTreeSet<String>);
 
 struct RealmInfo {
   last_updated: chrono::DateTime<chrono::Utc>,
@@ -111,6 +149,18 @@ enum ServerResponse {
   Connected,
   Deliver(puzzleverse_core::ClientResponse),
   Disconnected,
+}
+
+enum StatusInfo {
+  AcknowledgeFailure(String),
+  RealmLink(String, String),
+  TimeoutFailure(String, chrono::DateTime<chrono::Utc>),
+  TimeoutSuccess(String, chrono::DateTime<chrono::Utc>),
+}
+
+#[derive(Default)]
+struct StatusList {
+  list: Vec<StatusInfo>,
 }
 
 impl ConnectionState {
@@ -310,6 +360,20 @@ impl ConnectionState {
         }
       }
     }
+  }
+}
+
+impl InflightRequests {
+  fn finish(&mut self, id: i32) -> Option<InflightOperation> {
+    match self.outstanding.iter().enumerate().filter(|(_, r)| r.id != id).map(|(i, _)| i).next() {
+      Some(index) => Some(self.outstanding.remove(index).operation),
+      None => None,
+    }
+  }
+  fn push(&mut self, operation: InflightOperation) -> i32 {
+    let id = self.id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    self.outstanding.push(InflightRequest { operation, id, created: chrono::Utc::now() });
+    id
   }
 }
 
@@ -567,6 +631,8 @@ fn main() {
     ap.refer(&mut insecure).add_option(&["-i", "--insecure"], argparse::StoreTrue, "Use HTTP instead HTTPS");
     ap.parse_args_or_exit();
   }
+  let mut asset_directory = dirs.cache_dir().to_path_buf();
+  asset_directory.push("assets");
   let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
   use bevy::ecs::system::IntoSystem;
   bevy::app::App::build()
@@ -574,10 +640,16 @@ fn main() {
     .add_event::<ServerResponse>()
     .insert_resource(ServerConnection::new(&rt))
     .insert_resource(ScreenState::ServerSelection { insecure, server: String::new(), player: String::new(), error_message })
+    .insert_resource(AssetManager(Box::new(puzzleverse_core::asset_store::FileSystemStore::new(asset_directory, &[2, 4, 4]))))
+    .init_resource::<AllowedCapabilities>()
     .init_resource::<Bookmarks>()
+    .init_resource::<CurrentAccess>()
     .init_resource::<DirectMessages>()
-    .init_resource::<i32>()
+    .init_resource::<InflightRequests>()
+    .init_resource::<KnownServers>()
+    .init_resource::<PublicKeys>()
     .init_resource::<RealmsKnown>()
+    .init_resource::<StatusList>()
     .add_plugins(bevy::DefaultPlugins)
     .add_plugin(bevy_egui::EguiPlugin)
     .add_startup_system(setup.system())
@@ -607,10 +679,11 @@ fn draw_ui(
   mut clipboard: bevy::ecs::system::ResMut<bevy_egui::EguiClipboard>,
   mut direct_messages: bevy::ecs::system::ResMut<DirectMessages>,
   mut exit: bevy::app::EventWriter<bevy::app::AppExit>,
+  mut inflight_requests: bevy::ecs::system::ResMut<InflightRequests>,
   known_realms: bevy::ecs::system::ResMut<RealmsKnown>,
   mut screen: bevy::ecs::system::ResMut<ScreenState>,
-  mut server_count: bevy::ecs::system::ResMut<i32>,
   mut server_requests: bevy::app::EventWriter<ServerRequest>,
+  mut status_list: bevy::ecs::system::ResMut<StatusList>,
   mut windows: bevy::ecs::system::ResMut<bevy::window::Windows>,
 ) {
   let ui = egui.ctx();
@@ -758,8 +831,8 @@ fn draw_ui(
             let send = ui.button("⮨");
             if chatbox.changed() && direct_message.ends_with('\n') || send.clicked() {
               server_requests.send(ServerRequest::Deliver(puzzleverse_core::ClientRequest::DirectMessageSend {
-                recipient: direct_message.clone(),
-                id: todo!(),
+                recipient: direct_message_user.clone(),
+                id: inflight_requests.push(InflightOperation::DirectMessage(direct_message_user.clone())),
                 body: direct_message.clone(),
               }));
               direct_message.clear();
@@ -781,9 +854,41 @@ fn draw_ui(
               *new_chat = Some(String::new());
             }
           });
+          let info = direct_messages.0.get_mut(direct_message_user);
+          ui.horizontal(|ui| {
+            match info.as_ref().map(|i| &i.location).unwrap_or(&puzzleverse_core::PlayerLocationState::Unknown) {
+              puzzleverse_core::PlayerLocationState::Invalid => (),
+              puzzleverse_core::PlayerLocationState::Unknown => {
+                ui.label("Whereabouts unknown");
+              }
+              puzzleverse_core::PlayerLocationState::ServerDown => {
+                ui.label("Player's server is offline");
+              }
+              puzzleverse_core::PlayerLocationState::Offline => {
+                ui.label("Player is offline");
+              }
+              puzzleverse_core::PlayerLocationState::Online => {
+                ui.label("Player is online");
+              }
+              puzzleverse_core::PlayerLocationState::InTransit => {
+                ui.label("Player is in transit");
+              }
+              puzzleverse_core::PlayerLocationState::Realm(realm, server) => {
+                ui.label("Player is in online");
+                if ui.button("Join Them").clicked() {
+                  server_requests.send(ServerRequest::Deliver(puzzleverse_core::ClientRequest::RealmChange {
+                    realm: puzzleverse_core::RealmTarget::RemoteRealm { realm: realm.clone(), server: server.clone() },
+                  }));
+                }
+              }
+            };
+            if ui.button("Update").clicked() {
+              server_requests.send(ServerRequest::Deliver(puzzleverse_core::ClientRequest::PlayerCheck(direct_message_user.clone())));
+            }
+          });
           bevy_egui::egui::ScrollArea::auto_sized().id_source("direct_chat").show(ui, |ui| {
             bevy_egui::egui::Grid::new("direct_grid").striped(true).spacing([10.0, 4.0]).show(ui, |ui| {
-              match direct_messages.0.get_mut(direct_message_user).filter(|l| !l.messages.is_empty()) {
+              match info.filter(|l| !l.messages.is_empty()) {
                 None => {
                   ui.label("No messages");
                 }
@@ -823,7 +928,12 @@ fn draw_ui(
               match direct_messages.0.entry(new_chat.clone()) {
                 std::collections::btree_map::Entry::Occupied(_) => (),
                 std::collections::btree_map::Entry::Vacant(v) => {
-                  v.insert(DirectMessageInfo { messages: vec![], last_viewed: chrono::MIN_DATETIME, last_message: chrono::MIN_DATETIME });
+                  v.insert(DirectMessageInfo {
+                    messages: vec![],
+                    last_viewed: chrono::MIN_DATETIME,
+                    last_message: chrono::MIN_DATETIME,
+                    location: puzzleverse_core::PlayerLocationState::Unknown,
+                  });
                 }
               }
               close_new_chat = true;
@@ -843,9 +953,10 @@ fn draw_ui(
           ui.horizontal(|ui| {
             if ui.button("Delete").clicked() {
               *confirm_delete = false;
-              *server_count += 1;
-              let id = *server_count;
-              server_requests.send(ServerRequest::Deliver(puzzleverse_core::ClientRequest::RealmDelete { id, target: realm_id.clone() }));
+              server_requests.send(ServerRequest::Deliver(puzzleverse_core::ClientRequest::RealmDelete {
+                id: inflight_requests.push(InflightOperation::DeleteRealm(realm_id.clone())),
+                target: realm_id.clone(),
+              }));
             }
             if ui.button("Cancel").clicked() {
               *confirm_delete = false;
@@ -918,13 +1029,20 @@ fn draw_ui(
   }
 }
 fn process_request(
+  mut allowed_capabilities: bevy::ecs::system::ResMut<AllowedCapabilities>,
+  mut asset_manager: bevy::ecs::system::ResMut<AssetManager>,
   mut bookmarks: bevy::ecs::system::ResMut<Bookmarks>,
+  mut current_access: bevy::ecs::system::ResMut<CurrentAccess>,
   mut direct_messages: bevy::ecs::system::ResMut<DirectMessages>,
   mut exit: bevy::app::EventWriter<bevy::app::AppExit>,
+  mut inflight_requests: bevy::ecs::system::ResMut<InflightRequests>,
   mut known_realms: bevy::ecs::system::ResMut<RealmsKnown>,
+  mut known_servers: bevy::ecs::system::ResMut<KnownServers>,
+  mut public_keys: bevy::ecs::system::ResMut<PublicKeys>,
   mut screen: bevy::ecs::system::ResMut<ScreenState>,
   mut server_requests: bevy::app::EventWriter<ServerRequest>,
   mut server_responses: bevy::app::EventReader<ServerResponse>,
+  mut status_list: bevy::ecs::system::ResMut<StatusList>,
 ) {
   for response in server_responses.iter() {
     match response {
@@ -973,6 +1091,46 @@ fn process_request(
       ServerResponse::Disconnected => {
         *screen = ScreenState::ServerSelection { insecure: false, server: String::new(), player: String::new(), error_message: None };
       }
+      ServerResponse::Deliver(puzzleverse_core::ClientResponse::AccessChange { id, response }) => {
+        if let Some(InflightOperation::AccessChange(kind)) = inflight_requests.finish(*id) {
+          status_list.list.push(match response {
+            puzzleverse_core::AccessChangeResponse::Denied => {
+              StatusInfo::AcknowledgeFailure(format!("Not allowed to update access list for {}.", kind))
+            }
+            puzzleverse_core::AccessChangeResponse::Changed => {
+              StatusInfo::TimeoutSuccess(format!("Access list for {} updated.", kind), chrono::Utc::now() + chrono::Duration::seconds(10))
+            }
+            puzzleverse_core::AccessChangeResponse::InternalError => {
+              StatusInfo::TimeoutSuccess(format!("Server error updating {} access list.", kind), chrono::Utc::now() + chrono::Duration::seconds(10))
+            }
+          });
+        }
+      }
+      ServerResponse::Deliver(puzzleverse_core::ClientResponse::Asset(name, asset)) => {
+        asset_manager.0.push(name, asset);
+      }
+      ServerResponse::Deliver(puzzleverse_core::ClientResponse::AssetCreationFailed { id, error }) => {
+        if let Some(InflightOperation::AssetCreation(asset)) = inflight_requests.finish(*id) {
+          status_list.list.push(StatusInfo::AcknowledgeFailure(match error {
+            puzzleverse_core::AssetError::PermissionError => format!("Not allowed to create {}", asset),
+            puzzleverse_core::AssetError::Invalid => format!("Asset {} is not valid.", asset),
+            puzzleverse_core::AssetError::Missing(assets) => {
+              format!("Asset {} references other assets that are not available: {}", asset, assets.join(", "))
+            }
+          }));
+        }
+      }
+      ServerResponse::Deliver(puzzleverse_core::ClientResponse::AssetCreationSucceeded { id, hash }) => {
+        if let Some(InflightOperation::AssetCreation(asset)) = inflight_requests.finish(*id) {
+          status_list
+            .list
+            .push(StatusInfo::TimeoutSuccess(format!("Uploaded {} as {}", asset, &hash), chrono::Utc::now() + chrono::Duration::seconds(3)));
+          // TODO: the hash should get used somehow
+        }
+      }
+      ServerResponse::Deliver(puzzleverse_core::ClientResponse::AssetUnavailable(asset)) => {
+        todo!();
+      }
       ServerResponse::Deliver(puzzleverse_core::ClientResponse::Bookmarks(key, values)) => {
         bookmarks.0.insert(*key, values.iter().cloned().collect());
         if key == &puzzleverse_core::BookmarkType::Player {
@@ -980,13 +1138,29 @@ fn process_request(
             match direct_messages.0.entry(player.clone()) {
               std::collections::btree_map::Entry::Occupied(_) => (),
               std::collections::btree_map::Entry::Vacant(v) => {
-                v.insert(DirectMessageInfo { last_viewed: chrono::MIN_DATETIME, messages: vec![], last_message: chrono::MIN_DATETIME });
+                v.insert(DirectMessageInfo {
+                  last_viewed: chrono::MIN_DATETIME,
+                  messages: vec![],
+                  last_message: chrono::MIN_DATETIME,
+                  location: puzzleverse_core::PlayerLocationState::Unknown,
+                });
               }
             }
           }
         }
       }
-
+      ServerResponse::Deliver(puzzleverse_core::ClientResponse::Capabilities { server_capabilities }) => {
+        allowed_capabilities.0 =
+          puzzleverse_core::CAPABILITIES.into_iter().filter(|c| server_capabilities.iter().any(|s| *c == s)).cloned().collect();
+      }
+      ServerResponse::Deliver(puzzleverse_core::ClientResponse::CheckAssets { asset }) => {
+        for id in asset.into_iter().filter(|a| !asset_manager.0.check(a)).cloned() {
+          server_requests.send(ServerRequest::Deliver(puzzleverse_core::ClientRequest::AssetPull { id }))
+        }
+      }
+      ServerResponse::Deliver(puzzleverse_core::ClientResponse::CurrentAccess { target, acls, default }) => {
+        current_access.0.insert(target.clone(), (acls.clone(), default.clone()));
+      }
       ServerResponse::Deliver(puzzleverse_core::ClientResponse::DirectMessages { player, messages }) => match direct_messages.0.entry(player.clone())
       {
         std::collections::btree_map::Entry::Occupied(mut o) => {
@@ -1000,6 +1174,7 @@ fn process_request(
             last_viewed: chrono::MIN_DATETIME,
             messages: messages.clone(),
             last_message: messages.iter().map(|m| m.timestamp).max().unwrap_or(chrono::MIN_DATETIME),
+            location: puzzleverse_core::PlayerLocationState::Unknown,
           });
         }
       },
@@ -1011,7 +1186,12 @@ fn process_request(
             o.get_mut().last_message = *timestamp
           }
           std::collections::btree_map::Entry::Vacant(v) => {
-            v.insert(DirectMessageInfo { last_viewed: chrono::MIN_DATETIME, messages: vec![message], last_message: *timestamp });
+            v.insert(DirectMessageInfo {
+              last_viewed: chrono::MIN_DATETIME,
+              messages: vec![message],
+              last_message: *timestamp,
+              location: puzzleverse_core::PlayerLocationState::Unknown,
+            });
           }
         }
       }
@@ -1022,7 +1202,12 @@ fn process_request(
               o.get_mut().last_message = *timestamp;
             }
             std::collections::btree_map::Entry::Vacant(v) => {
-              v.insert(DirectMessageInfo { last_viewed: *last_login, messages: vec![], last_message: *timestamp });
+              v.insert(DirectMessageInfo {
+                last_viewed: *last_login,
+                messages: vec![],
+                last_message: *timestamp,
+                location: puzzleverse_core::PlayerLocationState::Unknown,
+              });
             }
           }
         }
@@ -1030,11 +1215,33 @@ fn process_request(
       ServerResponse::Deliver(puzzleverse_core::ClientResponse::Disconnect) => {
         exit.send(bevy::app::AppExit);
       }
-      ServerResponse::Deliver(puzzleverse_core::ClientResponse::RealmsAvailable { display, realms }) => {
-        known_realms.0.insert(display.clone(), RealmInfo { last_updated: chrono::Utc::now(), realms: realms.clone() });
+      ServerResponse::Deliver(puzzleverse_core::ClientResponse::DirectMessageReceipt { id, status }) => {
+        if let Some(InflightOperation::DirectMessage(recipient)) = inflight_requests.finish(*id) {
+          match status {
+            puzzleverse_core::DirectMessageStatus::Delivered => (),
+            puzzleverse_core::DirectMessageStatus::Forbidden => {
+              status_list.list.push(StatusInfo::AcknowledgeFailure(format!("Sending direct messages to {} is not permitted.", recipient)))
+            }
+            puzzleverse_core::DirectMessageStatus::Queued => status_list
+              .list
+              .push(StatusInfo::TimeoutSuccess(format!("Sending messages to {}...", recipient), chrono::Utc::now() + chrono::Duration::seconds(5))),
+            puzzleverse_core::DirectMessageStatus::InternalError => {
+              status_list.list.push(StatusInfo::AcknowledgeFailure(format!("Internal server error while sending direct messages to {}.", recipient)))
+            }
+            puzzleverse_core::DirectMessageStatus::UnknownRecipient => {
+              status_list.list.push(StatusInfo::AcknowledgeFailure(format!("Recipient {} is unknown.", recipient)))
+            }
+          }
+        }
       }
       ServerResponse::Deliver(puzzleverse_core::ClientResponse::InTransit) => {
         *screen = ScreenState::InTransit;
+      }
+      ServerResponse::Deliver(puzzleverse_core::ClientResponse::PublicKeys(keys)) => {
+        public_keys.0 = keys.into_iter().cloned().collect();
+      }
+      ServerResponse::Deliver(puzzleverse_core::ClientResponse::RealmsAvailable { display, realms }) => {
+        known_realms.0.insert(display.clone(), RealmInfo { last_updated: chrono::Utc::now(), realms: realms.clone() });
       }
       ServerResponse::Deliver(puzzleverse_core::ClientResponse::RealmChanged(change)) => match change {
         puzzleverse_core::RealmChange::Denied => {
@@ -1053,7 +1260,48 @@ fn process_request(
           }
         }
       },
-      ServerResponse::Deliver(x) => eprintln!("Got unhandled request: {:?}", x),
+      ServerResponse::Deliver(puzzleverse_core::ClientResponse::RealmCreation { id, status }) => {
+        if let Some(InflightOperation::RealmCreation(realm)) = inflight_requests.finish(*id) {
+          status_list.list.push(match status {
+            puzzleverse_core::RealmCreationStatus::Created(principal) => StatusInfo::RealmLink(principal.clone(), format!("Realm has been created.")),
+            puzzleverse_core::RealmCreationStatus::InternalError => {
+              StatusInfo::AcknowledgeFailure(format!("Unknown error trying to create realm {}.", realm))
+            }
+            puzzleverse_core::RealmCreationStatus::TooManyRealms => {
+              StatusInfo::AcknowledgeFailure(format!("Cannot create realm {}. You already have too many realms.", realm))
+            }
+            puzzleverse_core::RealmCreationStatus::Duplicate => {
+              StatusInfo::AcknowledgeFailure(format!("Realm {} is a duplicate of an existing realm.", realm))
+            }
+          });
+        }
+      }
+      ServerResponse::Deliver(puzzleverse_core::ClientResponse::RealmDeletion { id, ok }) => {
+        if let Some(InflightOperation::RealmDeletion(realm)) = inflight_requests.finish(*id) {
+          status_list.list.push(if *ok {
+            StatusInfo::TimeoutSuccess(format!("Realm {} has been deleted.", realm), chrono::Utc::now() + chrono::Duration::seconds(10))
+          } else {
+            StatusInfo::AcknowledgeFailure(format!("Cannot delete realm {}.", realm))
+          });
+        }
+      }
+      ServerResponse::Deliver(puzzleverse_core::ClientResponse::Servers(servers)) => {
+        known_servers.0 = servers.into_iter().cloned().collect();
+      }
+      ServerResponse::Deliver(puzzleverse_core::ClientResponse::PlayerState { player, state }) => match direct_messages.0.entry(player.clone()) {
+        std::collections::btree_map::Entry::Vacant(v) => {
+          v.insert(DirectMessageInfo {
+            messages: vec![],
+            last_viewed: chrono::Utc::now(),
+            last_message: chrono::Utc::now(),
+            location: state.clone(),
+          });
+        }
+        std::collections::btree_map::Entry::Occupied(mut o) => {
+          o.get_mut().location = state.clone();
+        }
+      },
+      ServerResponse::Deliver(puzzleverse_core::ClientResponse::InRealm(response)) => eprintln!("Got unhandled request: {:?}", response),
     }
   }
 }

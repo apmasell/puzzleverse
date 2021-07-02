@@ -52,7 +52,7 @@ pub enum AccessDefault {
 /// In any case, first a set of server ACLs are applied. If the user is allowed, then a realm-specific (for access or administration) or user-specific (for direct messages) are applied. If still allowed, then the action is permitted.
 ///
 /// Access to a realm implies broadcast messaging while in that realm.
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum AccessTarget {
   /// Access controls for a server.
   ///
