@@ -48,7 +48,6 @@ enum InflightOperation {
   AccessChange(String),
   AssetCreation(String),
   DirectMessage(String),
-  DeleteRealm(String),
   RealmCreation(String),
   RealmDeletion(String),
 }
@@ -155,7 +154,7 @@ enum ServerResponse {
 
 enum StatusInfo {
   AcknowledgeFailure(String),
-  RealmLink(String, String),
+  RealmLink(puzzleverse_core::RealmTarget, String),
   TimeoutFailure(String, chrono::DateTime<chrono::Utc>),
   TimeoutSuccess(String, chrono::DateTime<chrono::Utc>),
 }
@@ -966,7 +965,7 @@ fn draw_ui(
             if ui.button("Delete").clicked() {
               *confirm_delete = false;
               server_requests.send(ServerRequest::Deliver(puzzleverse_core::ClientRequest::RealmDelete {
-                id: inflight_requests.push(InflightOperation::DeleteRealm(realm_id.clone())),
+                id: inflight_requests.push(InflightOperation::RealmDeletion(realm_id.clone())),
                 target: realm_id.clone(),
               }));
             }
@@ -1280,7 +1279,9 @@ fn process_request(
       ServerResponse::Deliver(puzzleverse_core::ClientResponse::RealmCreation { id, status }) => {
         if let Some(InflightOperation::RealmCreation(realm)) = inflight_requests.finish(*id) {
           status_list.list.push(match status {
-            puzzleverse_core::RealmCreationStatus::Created(principal) => StatusInfo::RealmLink(principal.clone(), format!("Realm has been created.")),
+            puzzleverse_core::RealmCreationStatus::Created(principal) => {
+              StatusInfo::RealmLink(puzzleverse_core::RealmTarget::LocalRealm(principal.clone()), format!("Realm has been created."))
+            }
             puzzleverse_core::RealmCreationStatus::InternalError => {
               StatusInfo::AcknowledgeFailure(format!("Unknown error trying to create realm {}.", realm))
             }
