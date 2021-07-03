@@ -708,41 +708,48 @@ fn draw_ui(
       "Loading realm - Puzzleverse".to_string()
     }
     ScreenState::Lost(realm_selector, error_message) => {
-      bevy_egui::egui::Window::new("Navigate to Realm").collapsible(false).show(&ui, |ui| {
-        if let Some(error_message) = error_message {
-          ui.horizontal(|ui| ui.add(bevy_egui::egui::widgets::Label::new(error_message.clone()).text_color(bevy_egui::egui::Color32::RED)));
-        }
-        realm_selector.draw_ui(ui, known_realms, &mut server_requests, |realm| puzzleverse_core::ClientRequest::RealmChange { realm })
-      });
+      bevy_egui::egui::Window::new("Navigate to Realm").anchor(bevy_egui::egui::Align2::CENTER_CENTER, [0.0, 0.0]).collapsible(false).show(
+        &ui,
+        |ui| {
+          if let Some(error_message) = error_message {
+            ui.horizontal(|ui| ui.add(bevy_egui::egui::widgets::Label::new(error_message.clone()).text_color(bevy_egui::egui::Color32::RED)));
+          }
+          realm_selector.draw_ui(ui, known_realms, &mut server_requests, |realm| puzzleverse_core::ClientRequest::RealmChange { realm })
+        },
+      );
       "Puzzleverse".into()
     }
     ScreenState::PasswordLogin { insecure, password, server, player, error_message } => {
-      bevy_egui::egui::Window::new("Connect to Server").collapsible(false).show(&ui, |ui| {
-        ui.horizontal(|ui| {
-          ui.label("Password: ");
-          ui.add(bevy_egui::egui::TextEdit::singleline(password).password(true));
-        });
-        if let Some(error_message) = error_message {
-          ui.horizontal(|ui| ui.add(bevy_egui::egui::Label::new(error_message.as_str()).text_color(bevy_egui::egui::Color32::RED)));
-        }
-        ui.horizontal(|ui| {
-          if ui.button("Connect").clicked() {
-            server_requests.send(ServerRequest::PasswordLogin {
-              insecure: *insecure,
-              server: server.clone(),
-              player: player.clone(),
-              password: password.clone(),
-            });
-            next_ui = Some(ScreenState::Busy("Connecting...".into()));
+      bevy_egui::egui::Window::new("Connect to Server").anchor(bevy_egui::egui::Align2::CENTER_CENTER, [0.0, 0.0]).collapsible(false).show(
+        &ui,
+        |ui| {
+          ui.horizontal(|ui| {
+            ui.label("Password: ");
+            ui.add(bevy_egui::egui::TextEdit::singleline(password).password(true));
+          });
+          if let Some(error_message) = error_message {
+            ui.horizontal(|ui| ui.add(bevy_egui::egui::Label::new(error_message.as_str()).text_color(bevy_egui::egui::Color32::RED)));
           }
-          if ui.button("Back").clicked() {
-            next_ui = Some(ScreenState::ServerSelection { insecure: *insecure, server: server.clone(), player: player.clone(), error_message: None });
-          }
-          if ui.button("Quit").clicked() {
-            exit.send(bevy::app::AppExit);
-          }
-        });
-      });
+          ui.horizontal(|ui| {
+            if ui.button("Connect").clicked() {
+              server_requests.send(ServerRequest::PasswordLogin {
+                insecure: *insecure,
+                server: server.clone(),
+                player: player.clone(),
+                password: password.clone(),
+              });
+              next_ui = Some(ScreenState::Busy("Connecting...".into()));
+            }
+            if ui.button("Back").clicked() {
+              next_ui =
+                Some(ScreenState::ServerSelection { insecure: *insecure, server: server.clone(), player: player.clone(), error_message: None });
+            }
+            if ui.button("Quit").clicked() {
+              exit.send(bevy::app::AppExit);
+            }
+          });
+        },
+      );
       "Login - Puzzleverse".to_string()
     }
     ScreenState::Realm {
@@ -760,7 +767,7 @@ fn draw_ui(
       realm_server,
       ..
     } => {
-      bevy_egui::egui::TopPanel::top("menu_bar").show(&ui, |ui| {
+      bevy_egui::egui::TopBottomPanel::top("menu_bar").show(&ui, |ui| {
         if ui.button("🏠").clicked() {
           server_requests.send(ServerRequest::Deliver(puzzleverse_core::ClientRequest::RealmChange { realm: puzzleverse_core::RealmTarget::Home }));
         }
@@ -771,7 +778,7 @@ fn draw_ui(
         }
         ui.checkbox(&mut fullscreen, "Fullscreen");
       });
-      bevy_egui::egui::SidePanel::left("toolbar", 150.0).show(&ui, |ui| {
+      bevy_egui::egui::SidePanel::left("toolbar").show(&ui, |ui| {
         bevy_egui::egui::CollapsingHeader::new("Realm").show(ui, |ui| {
           bevy_egui::egui::Grid::new("realm_grid").striped(true).spacing([40.0, 4.0]).show(ui, |ui| {
             ui.label("Name");
@@ -917,13 +924,16 @@ fn draw_ui(
         });
       });
       if let Some(realm_selector) = realm_selector {
-        bevy_egui::egui::Window::new("Travel to Realm").collapsible(false).show(&ui, |ui| {
-          realm_selector.draw_ui(ui, known_realms, &mut server_requests, |realm| puzzleverse_core::ClientRequest::RealmChange { realm })
-        });
+        bevy_egui::egui::Window::new("Travel to Realm")
+          .anchor(bevy_egui::egui::Align2::CENTER_CENTER, [0.0, 0.0])
+          .collapsible(false)
+          .show(&ui, |ui| {
+            realm_selector.draw_ui(ui, known_realms, &mut server_requests, |realm| puzzleverse_core::ClientRequest::RealmChange { realm })
+          });
       }
       let mut close_new_chat = false;
       if let Some(new_chat) = new_chat {
-        bevy_egui::egui::Window::new("New Chat").collapsible(false).show(&ui, |ui| {
+        bevy_egui::egui::Window::new("New Chat").anchor(bevy_egui::egui::Align2::CENTER_CENTER, [0.0, 0.0]).collapsible(false).show(&ui, |ui| {
           ui.horizontal(|ui| ui.text_edit_singleline(new_chat));
           ui.horizontal(|ui| {
             if ui.button("Start").clicked() && !new_chat.is_empty() {
@@ -950,7 +960,7 @@ fn draw_ui(
         *new_chat = None;
       }
       if *confirm_delete {
-        bevy_egui::egui::Window::new("Delete Realm").collapsible(false).show(&ui, |ui| {
+        bevy_egui::egui::Window::new("Delete Realm").anchor(bevy_egui::egui::Align2::CENTER_CENTER, [0.0, 0.0]).collapsible(false).show(&ui, |ui| {
           ui.horizontal(|ui| ui.label("Are you sure you want to delete this realm?"));
           ui.horizontal(|ui| {
             if ui.button("Delete").clicked() {
@@ -969,35 +979,40 @@ fn draw_ui(
       format!("{} - Puzzleverse", realm_name)
     }
     ScreenState::ServerSelection { insecure, server, player, error_message } => {
-      bevy_egui::egui::Window::new("Connect to Server").collapsible(false).show(&ui, |ui| {
-        bevy_egui::egui::Grid::new("connect_grid").striped(true).spacing([10.0, 8.0]).show(ui, |ui| {
-          ui.label("Server: ");
-          ui.add(bevy_egui::egui::TextEdit::singleline(server).desired_width(300.0));
-          ui.end_row();
-          ui.label("Player: ");
-          ui.add(bevy_egui::egui::TextEdit::singleline(player).desired_width(300.0));
-          ui.end_row();
-          if let Some(error_message) = error_message {
-            ui.label("Error: ");
-            ui.add(bevy_egui::egui::Label::new(error_message.as_str()).text_color(bevy_egui::egui::Color32::RED));
+      bevy_egui::egui::Window::new("Connect to Server").anchor(bevy_egui::egui::Align2::CENTER_CENTER, [0.0, 0.0]).collapsible(false).show(
+        &ui,
+        |ui| {
+          bevy_egui::egui::Grid::new("connect_grid").striped(true).spacing([10.0, 8.0]).show(ui, |ui| {
+            ui.label("Server: ");
+            ui.add(bevy_egui::egui::TextEdit::singleline(server).desired_width(300.0));
             ui.end_row();
-          }
-          if *insecure {
-            ui.label("Warning: ");
-            ui.add(bevy_egui::egui::Label::new("Connection is unencrypted. I hope this is for debugging.").text_color(bevy_egui::egui::Color32::RED));
+            ui.label("Player: ");
+            ui.add(bevy_egui::egui::TextEdit::singleline(player).desired_width(300.0));
             ui.end_row();
-          }
-          if ui.button("Connect").clicked() {
-            server_requests.send(ServerRequest::CheckAuthMethods { insecure: *insecure, server: server.clone(), player: player.clone() });
-            next_ui = Some(ScreenState::Busy(format!("Contacting {}...", &server)))
-          }
-          if ui.button("Quit").clicked() {
-            exit.send(bevy::app::AppExit);
-          }
-          ui.end_row();
-          ui.label(bevy_egui::egui::Label::new(format!("v{}", self_update::cargo_crate_version!())).text_style(bevy_egui::egui::TextStyle::Small));
-        });
-      });
+            if let Some(error_message) = error_message {
+              ui.label("Error: ");
+              ui.add(bevy_egui::egui::Label::new(error_message.as_str()).text_color(bevy_egui::egui::Color32::RED));
+              ui.end_row();
+            }
+            if *insecure {
+              ui.label("Warning: ");
+              ui.add(
+                bevy_egui::egui::Label::new("Connection is unencrypted. I hope this is for debugging.").text_color(bevy_egui::egui::Color32::RED),
+              );
+              ui.end_row();
+            }
+            if ui.button("Connect").clicked() {
+              server_requests.send(ServerRequest::CheckAuthMethods { insecure: *insecure, server: server.clone(), player: player.clone() });
+              next_ui = Some(ScreenState::Busy(format!("Contacting {}...", &server)))
+            }
+            if ui.button("Quit").clicked() {
+              exit.send(bevy::app::AppExit);
+            }
+            ui.end_row();
+            ui.label(bevy_egui::egui::Label::new(format!("v{}", self_update::cargo_crate_version!())).text_style(bevy_egui::egui::TextStyle::Small));
+          });
+        },
+      );
       "Login - Puzzleverse".to_string()
     }
     ScreenState::Busy(message) => {
