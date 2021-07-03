@@ -1039,6 +1039,57 @@ fn draw_ui(
       "Error - Puzzleverse".to_string()
     }
   });
+  let now = chrono::Utc::now();
+  status_list.list.retain(|s| match s {
+    StatusInfo::TimeoutFailure(_, time) => time < &now,
+    StatusInfo::TimeoutSuccess(_, time) => time < &now,
+    _ => true,
+  });
+  if !inflight_requests.outstanding.is_empty() || !status_list.list.is_empty() {
+    bevy_egui::egui::Window::new("Status").anchor(bevy_egui::egui::Align2::LEFT_BOTTOM, [5.0, -5.0]).title_bar(false).show(&ui, |ui| {
+      for outstanding in inflight_requests.outstanding.iter() {
+        ui.horizontal(|ui| {
+          ui.label(match &outstanding.operation {
+            InflightOperation::AccessChange(access) => format!("Changing {}...", access),
+            InflightOperation::DirectMessage(name) => format!("Sending message to {}...", name),
+            InflightOperation::AssetCreation(asset) => format!("Uploading {}...", asset),
+            InflightOperation::RealmCreation(realm) => format!("Creating {}...", realm),
+            InflightOperation::RealmDeletion(realm) => format!("Deleting {}...", realm),
+          })
+        });
+      }
+      let mut dead = None;
+      for (index, status) in status_list.list.iter().enumerate() {
+        ui.horizontal(|ui| match status {
+          StatusInfo::AcknowledgeFailure(message) => {
+            ui.add(bevy_egui::egui::Label::new(message).text_color(bevy_egui::egui::Color32::RED));
+            if ui.button("×").clicked() {
+              dead = Some(index);
+            }
+          }
+          StatusInfo::RealmLink(link, message) => {
+            ui.label(message);
+            if ui.button("Go There").clicked() {
+              server_requests.send(ServerRequest::Deliver(puzzleverse_core::ClientRequest::RealmChange { realm: link.clone() }));
+              dead = Some(index);
+            }
+            if ui.button("×").clicked() {
+              dead = Some(index);
+            }
+          }
+          StatusInfo::TimeoutFailure(message, _) => {
+            ui.add(bevy_egui::egui::Label::new(message).text_color(bevy_egui::egui::Color32::RED));
+          }
+          StatusInfo::TimeoutSuccess(message, _) => {
+            ui.label(message);
+          }
+        });
+      }
+      if let Some(index) = dead {
+        status_list.list.remove(index);
+      }
+    });
+  }
   window.set_mode(if fullscreen { bevy::window::WindowMode::BorderlessFullscreen } else { bevy::window::WindowMode::Windowed });
   if let Some(value) = next_ui {
     *screen = value;
