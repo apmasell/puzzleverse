@@ -1,3 +1,5 @@
+mod gradiator;
+
 use futures::{SinkExt, StreamExt};
 
 #[derive(Default)]
