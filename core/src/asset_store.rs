@@ -30,8 +30,8 @@ impl<T: AsRef<std::path::Path> + Send + Sync> FileSystemStore<T> {
   /// Create a new file store backed by a directory
   /// * `directory` - the directory root holding the asset files
   /// * `splits` - since most file systems would get angry with a directory containing many files, this creates hierarchical directory structure by breaking up an asset ID. A split of 4, 2, will transform `AAAABBCCCC` into `AAAA/BB/CCCC`
-  pub fn new(directory: T, splits: &[usize]) -> FileSystemStore<T> {
-    FileSystemStore { root: directory, splits: Vec::from(splits) }
+  pub fn new(directory: T, splits: impl IntoIterator<Item = usize>) -> FileSystemStore<T> {
+    FileSystemStore { root: directory, splits: splits.into_iter().collect() }
   }
   fn get_path(&self, asset: &str) -> std::path::PathBuf {
     let mut result = self.root.as_ref().to_path_buf();

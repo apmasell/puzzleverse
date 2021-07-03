@@ -3867,7 +3867,7 @@ async fn start() -> Result<(), Box<dyn std::error::Error>> {
   let server = std::sync::Arc::new(Server {
     asset_store: Box::new(puzzleverse_core::asset_store::FileSystemStore::new(
       std::path::Path::new(&configuration.asset_store).to_owned(),
-      &[4, 4, 8],
+      [4, 4, 8].iter().cloned(),
     )),
     outstanding_assets: tokio::sync::Mutex::new(std::collections::HashMap::new()),
     push_assets: tokio::sync::Mutex::new(asset_sender),

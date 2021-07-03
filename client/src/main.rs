@@ -642,7 +642,7 @@ fn main() {
     .add_event::<ServerResponse>()
     .insert_resource(ServerConnection::new(&rt))
     .insert_resource(ScreenState::ServerSelection { insecure, server: String::new(), player: String::new(), error_message })
-    .insert_resource(AssetManager(Box::new(puzzleverse_core::asset_store::FileSystemStore::new(asset_directory, &[2, 4, 4]))))
+    .insert_resource(AssetManager(Box::new(puzzleverse_core::asset_store::FileSystemStore::new(asset_directory, [4, 4, 8].iter().cloned()))))
     .init_resource::<AllowedCapabilities>()
     .init_resource::<Bookmarks>()
     .init_resource::<CurrentAccess>()
