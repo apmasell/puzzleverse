@@ -19,6 +19,14 @@ You will need the WASM toolchain:
     rustup target add wasm32-unknown-unknown
     cargo install wasm-bindgen-cli
 
+On Debian/Ubuntu Linux, install:
+
+    sudo apt-get install build-essentials openssl-dev
+
+On Windows, install the vcpkg program and install:
+
+    vcpkg.exe install openssl:x64-windows-static-md
+
 The build using:
 
     cargo build --target wasm32-unknown-unknown -p puzzleverse-client
