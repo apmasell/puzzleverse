@@ -40,6 +40,7 @@ struct DirectMessageInfo {
   last_viewed: chrono::DateTime<chrono::Utc>,
   last_message: chrono::DateTime<chrono::Utc>,
   location: puzzleverse_core::PlayerLocationState,
+  draft: String,
 }
 #[derive(Default)]
 struct DirectMessages(std::collections::BTreeMap<String, DirectMessageInfo>);
@@ -104,7 +105,6 @@ enum ScreenState {
   Realm {
     new_chat: Option<String>,
     confirm_delete: bool,
-    direct_message: String,
     direct_message_user: String,
     is_mine: bool,
     messages: Vec<puzzleverse_core::RealmMessage>,
@@ -754,7 +754,6 @@ fn draw_ui(
     ScreenState::Realm {
       new_chat,
       confirm_delete,
-      direct_message,
       direct_message_user,
       is_mine,
       messages,
@@ -835,15 +834,15 @@ fn draw_ui(
             })
           });
           ui.horizontal(|ui| {
-            let chatbox = ui.text_edit_singleline(direct_message);
+            let chatbox = ui.text_edit_singleline(realm_message);
             let send = ui.button("⮨");
-            if chatbox.changed() && direct_message.ends_with('\n') || send.clicked() {
+            if chatbox.changed() && realm_message.ends_with('\n') || send.clicked() {
               server_requests.send(ServerRequest::Deliver(puzzleverse_core::ClientRequest::DirectMessageSend {
                 recipient: direct_message_user.clone(),
                 id: inflight_requests.push(InflightOperation::DirectMessage(direct_message_user.clone())),
-                body: direct_message.clone(),
+                body: realm_message.clone(),
               }));
-              direct_message.clear();
+              realm_message.clear();
             }
           })
         });
@@ -862,7 +861,7 @@ fn draw_ui(
               *new_chat = Some(String::new());
             }
           });
-          let info = direct_messages.0.get_mut(direct_message_user);
+          let mut info = direct_messages.0.get_mut(direct_message_user);
           ui.horizontal(|ui| {
             match info.as_ref().map(|i| &i.location).unwrap_or(&puzzleverse_core::PlayerLocationState::Unknown) {
               puzzleverse_core::PlayerLocationState::Invalid => (),
@@ -894,13 +893,13 @@ fn draw_ui(
               server_requests.send(ServerRequest::Deliver(puzzleverse_core::ClientRequest::PlayerCheck(direct_message_user.clone())));
             }
           });
-          bevy_egui::egui::ScrollArea::auto_sized().id_source("direct_chat").show(ui, |ui| {
-            bevy_egui::egui::Grid::new("direct_grid").striped(true).spacing([10.0, 4.0]).show(ui, |ui| {
-              match info.filter(|l| !l.messages.is_empty()) {
-                None => {
-                  ui.label("No messages");
-                }
-                Some(mut info) => {
+          match info.as_deref_mut().filter(|l| !l.messages.is_empty()) {
+            None => {
+              ui.label("No messages");
+            }
+            Some(mut info) => {
+              bevy_egui::egui::ScrollArea::auto_sized().id_source("direct_chat").show(ui, |ui| {
+                bevy_egui::egui::Grid::new("direct_grid").striped(true).spacing([10.0, 4.0]).show(ui, |ui| {
                   info.last_message = chrono::Utc::now();
                   for message in info.messages.iter() {
                     ui.label(if message.inbound { direct_message_user.as_str() } else { "Me" })
@@ -908,18 +907,25 @@ fn draw_ui(
                     ui.add(bevy_egui::egui::Label::new(message.body.to_string()).wrap(true));
                     ui.end_row();
                   }
-                }
-              }
-            });
-            let chatbox = ui.text_edit_singleline(realm_message);
-            let send = ui.button("⮨");
-            if chatbox.changed() && realm_message.ends_with('\n') || send.clicked() {
-              server_requests.send(ServerRequest::Deliver(puzzleverse_core::ClientRequest::InRealm(puzzleverse_core::RealmRequest::SendMessage(
-                realm_message.clone(),
-              ))));
-              realm_message.clear();
+                });
+              });
             }
-          });
+          }
+          match info {
+            None => (),
+            Some(mut info) => {
+              ui.horizontal(|ui| {
+                let chatbox = ui.text_edit_singleline(&mut info.draft);
+                let send = ui.button("⮨");
+                if chatbox.changed() && info.draft.ends_with('\n') || send.clicked() {
+                  server_requests.send(ServerRequest::Deliver(puzzleverse_core::ClientRequest::InRealm(
+                    puzzleverse_core::RealmRequest::SendMessage(info.draft.clone()),
+                  )));
+                  info.draft.clear();
+                }
+              });
+            }
+          }
         });
       });
       if let Some(realm_selector) = realm_selector {
@@ -944,6 +950,7 @@ fn draw_ui(
                     last_viewed: chrono::MIN_DATETIME,
                     last_message: chrono::MIN_DATETIME,
                     location: puzzleverse_core::PlayerLocationState::Unknown,
+                    draft: String::new(),
                   });
                 }
               }
@@ -1210,6 +1217,7 @@ fn process_request(
                   messages: vec![],
                   last_message: chrono::MIN_DATETIME,
                   location: puzzleverse_core::PlayerLocationState::Unknown,
+                  draft: String::new(),
                 });
               }
             }
@@ -1242,6 +1250,7 @@ fn process_request(
             messages: messages.clone(),
             last_message: messages.iter().map(|m| m.timestamp).max().unwrap_or(chrono::MIN_DATETIME),
             location: puzzleverse_core::PlayerLocationState::Unknown,
+            draft: String::new(),
           });
         }
       },
@@ -1258,6 +1267,7 @@ fn process_request(
               messages: vec![message],
               last_message: *timestamp,
               location: puzzleverse_core::PlayerLocationState::Unknown,
+              draft: String::new(),
             });
           }
         }
@@ -1274,6 +1284,7 @@ fn process_request(
                 messages: vec![],
                 last_message: *timestamp,
                 location: puzzleverse_core::PlayerLocationState::Unknown,
+                draft: String::new(),
               });
             }
           }
@@ -1364,6 +1375,7 @@ fn process_request(
             last_viewed: chrono::Utc::now(),
             last_message: chrono::Utc::now(),
             location: state.clone(),
+            draft: String::new(),
           });
         }
         std::collections::btree_map::Entry::Occupied(mut o) => {
