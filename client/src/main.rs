@@ -862,37 +862,49 @@ fn draw_ui(
             }
           });
           let mut info = direct_messages.0.get_mut(direct_message_user);
-          ui.horizontal(|ui| {
-            match info.as_ref().map(|i| &i.location).unwrap_or(&puzzleverse_core::PlayerLocationState::Unknown) {
-              puzzleverse_core::PlayerLocationState::Invalid => (),
-              puzzleverse_core::PlayerLocationState::Unknown => {
-                ui.label("Whereabouts unknown");
+          //TODO: check if player is in realm
+          if false {
+            ui.horizontal(|ui| {
+              ui.label("In this realm");
+              if ui.button("Join Them").clicked() {
+                server_requests.send(ServerRequest::Deliver(puzzleverse_core::ClientRequest::InRealm(
+                  puzzleverse_core::RealmRequest::FollowRequest { player: direct_message_user.clone() },
+                )));
               }
-              puzzleverse_core::PlayerLocationState::ServerDown => {
-                ui.label("Player's server is offline");
-              }
-              puzzleverse_core::PlayerLocationState::Offline => {
-                ui.label("Player is offline");
-              }
-              puzzleverse_core::PlayerLocationState::Online => {
-                ui.label("Player is online");
-              }
-              puzzleverse_core::PlayerLocationState::InTransit => {
-                ui.label("Player is in transit");
-              }
-              puzzleverse_core::PlayerLocationState::Realm(realm, server) => {
-                ui.label("Player is in online");
-                if ui.button("Join Them").clicked() {
-                  server_requests.send(ServerRequest::Deliver(puzzleverse_core::ClientRequest::RealmChange {
-                    realm: puzzleverse_core::RealmTarget::RemoteRealm { realm: realm.clone(), server: server.clone() },
-                  }));
+            });
+          } else {
+            ui.horizontal(|ui| {
+              match info.as_ref().map(|i| &i.location).unwrap_or(&puzzleverse_core::PlayerLocationState::Unknown) {
+                puzzleverse_core::PlayerLocationState::Invalid => (),
+                puzzleverse_core::PlayerLocationState::Unknown => {
+                  ui.label("Whereabouts unknown");
                 }
+                puzzleverse_core::PlayerLocationState::ServerDown => {
+                  ui.label("Player's server is offline");
+                }
+                puzzleverse_core::PlayerLocationState::Offline => {
+                  ui.label("Player is offline");
+                }
+                puzzleverse_core::PlayerLocationState::Online => {
+                  ui.label("Player is online");
+                }
+                puzzleverse_core::PlayerLocationState::InTransit => {
+                  ui.label("Player is in transit");
+                }
+                puzzleverse_core::PlayerLocationState::Realm(realm, server) => {
+                  ui.label("Player is in online");
+                  if ui.button("Join Them").clicked() {
+                    server_requests.send(ServerRequest::Deliver(puzzleverse_core::ClientRequest::RealmChange {
+                      realm: puzzleverse_core::RealmTarget::RemoteRealm { realm: realm.clone(), server: server.clone() },
+                    }));
+                  }
+                }
+              };
+              if ui.button("Update").clicked() {
+                server_requests.send(ServerRequest::Deliver(puzzleverse_core::ClientRequest::PlayerCheck(direct_message_user.clone())));
               }
-            };
-            if ui.button("Update").clicked() {
-              server_requests.send(ServerRequest::Deliver(puzzleverse_core::ClientRequest::PlayerCheck(direct_message_user.clone())));
-            }
-          });
+            });
+          }
           match info.as_deref_mut().filter(|l| !l.messages.is_empty()) {
             None => {
               ui.label("No messages");
