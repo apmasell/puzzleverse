@@ -64,9 +64,17 @@ struct InflightRequest {
   created: chrono::DateTime<chrono::Utc>,
   operation: InflightOperation,
 }
+struct InteractionTarget {
+  x: u32,
+  y: u32,
+  platform: u32,
+  click: bool,
+}
 
 #[derive(Default)]
 struct KnownServers(std::collections::BTreeSet<String>);
+
+struct PlayerName(String);
 
 #[derive(Default)]
 struct PublicKeys(std::collections::BTreeSet<String>);
@@ -103,11 +111,12 @@ enum ScreenState {
     server: String,
   },
   Realm {
-    new_chat: Option<String>,
+    clicked_realm_selector: Option<(Vec<puzzleverse_core::Action>, puzzleverse_core::Point, RealmSelector)>,
     confirm_delete: bool,
     direct_message_user: String,
     is_mine: bool,
     messages: Vec<puzzleverse_core::RealmMessage>,
+    new_chat: Option<String>,
     realm_asset: String,
     realm_id: String,
     realm_message: String,
@@ -382,10 +391,10 @@ impl RealmSelector {
   fn draw_ui(
     &mut self,
     ui: &mut bevy_egui::egui::Ui,
-    known_realms: bevy::ecs::system::ResMut<RealmsKnown>,
+    known_realms: &bevy::ecs::system::ResMut<RealmsKnown>,
 
     server_requests: &mut bevy::app::EventWriter<ServerRequest>,
-    request_for_realm: impl Fn(puzzleverse_core::RealmTarget) -> puzzleverse_core::ClientRequest,
+    request_for_realm: impl FnMut(puzzleverse_core::RealmTarget) -> puzzleverse_core::ClientRequest,
   ) {
     let mut selected = self.id();
     ui.horizontal(|ui| {
@@ -499,7 +508,7 @@ impl RealmSelector {
   fn show_list(
     ui: &mut bevy_egui::egui::Ui,
     server_requests: &mut bevy::app::EventWriter<ServerRequest>,
-    request_for_realm: impl Fn(puzzleverse_core::RealmTarget) -> puzzleverse_core::ClientRequest,
+    mut request_for_realm: impl FnMut(puzzleverse_core::RealmTarget) -> puzzleverse_core::ClientRequest,
     realms: Option<&RealmInfo>,
   ) {
     match realms {
@@ -652,9 +661,13 @@ fn main() {
     .init_resource::<RealmsKnown>()
     .init_resource::<StatusList>()
     .add_plugins(bevy::DefaultPlugins)
+    .add_plugin(bevy_mod_picking::PickingPlugin)
+    .add_plugin(bevy_mod_picking::InteractablePickingPlugin)
+    .add_plugin(bevy_mod_picking::HighlightablePickingPlugin)
     .add_plugin(bevy_egui::EguiPlugin)
     .add_startup_system(setup.system())
     .add_system(draw_ui.system())
+    .add_system(mouse_event.system())
     .add_system(process_request.system())
     .add_system_to_stage(bevy::app::CoreStage::PreUpdate, send_network_events.system())
     .add_system_to_stage(bevy::app::CoreStage::PreUpdate, receive_network_events.system())
@@ -666,8 +679,19 @@ fn main() {
 fn main() {
   unimplemented!()
 }
-fn setup(mut commands: bevy::ecs::system::Commands) {
-  commands.spawn().insert_bundle(bevy::render::entity::PerspectiveCameraBundle::new_3d());
+fn setup(
+  mut commands: bevy::ecs::system::Commands,
+  mut highlight_colors: bevy::ecs::system::ResMut<bevy_mod_picking::MeshButtonMaterials>,
+  mut materials: bevy::ecs::system::ResMut<bevy::asset::Assets<bevy::pbr::prelude::StandardMaterial>>,
+) {
+  commands
+    .spawn()
+    .insert_bundle(bevy::render::entity::PerspectiveCameraBundle::new_3d())
+    .insert_bundle(bevy_mod_picking::PickingCameraBundle::default());
+
+  highlight_colors.selected = materials.add(bevy::render::color::Color::hsla(207.0, 0.61, 0.71, 0.8).into());
+  highlight_colors.hovered = materials.add(bevy::render::color::Color::hsla(207.0, 0.61, 0.71, 0.9).into());
+  highlight_colors.pressed = materials.add(bevy::render::color::Color::hsla(207.0, 0.61, 0.71, 1.0).into());
 }
 
 fn send_network_events(connection: bevy::ecs::system::ResMut<ServerConnection>, mut network_events: bevy::app::EventWriter<ServerResponse>) {
@@ -682,6 +706,7 @@ fn draw_ui(
   mut exit: bevy::app::EventWriter<bevy::app::AppExit>,
   mut inflight_requests: bevy::ecs::system::ResMut<InflightRequests>,
   known_realms: bevy::ecs::system::ResMut<RealmsKnown>,
+  mut player_names: bevy::ecs::system::Query<(&mut bevy_mod_picking::Selection, &PlayerName)>,
   mut screen: bevy::ecs::system::ResMut<ScreenState>,
   mut server_requests: bevy::app::EventWriter<ServerRequest>,
   mut status_list: bevy::ecs::system::ResMut<StatusList>,
@@ -713,7 +738,7 @@ fn draw_ui(
           if let Some(error_message) = error_message {
             ui.horizontal(|ui| ui.add(bevy_egui::egui::widgets::Label::new(error_message.clone()).text_color(bevy_egui::egui::Color32::RED)));
           }
-          realm_selector.draw_ui(ui, known_realms, &mut server_requests, |realm| puzzleverse_core::ClientRequest::RealmChange { realm })
+          realm_selector.draw_ui(ui, &known_realms, &mut server_requests, |realm| puzzleverse_core::ClientRequest::RealmChange { realm })
         },
       );
       "Puzzleverse".into()
@@ -752,11 +777,12 @@ fn draw_ui(
       "Login - Puzzleverse".to_string()
     }
     ScreenState::Realm {
-      new_chat,
+      clicked_realm_selector,
       confirm_delete,
       direct_message_user,
       is_mine,
       messages,
+      new_chat,
       realm_asset,
       realm_id,
       realm_message,
@@ -848,62 +874,73 @@ fn draw_ui(
         });
         bevy_egui::egui::CollapsingHeader::new("Direct Chat").default_open(false).show(ui, |ui| {
           ui.horizontal(|ui| {
-            bevy_egui::egui::ComboBox::from_id_source("direct_chat").selected_text(direct_message_user.as_str()).show_ui(ui, |ui| {
-              for (user, info) in direct_messages.0.iter() {
-                ui.selectable_value(
-                  direct_message_user,
-                  user.to_string(),
-                  format!("{}{}", user, if info.last_viewed <= info.last_viewed { " *" } else { "" }),
-                );
+            if bevy_egui::egui::ComboBox::from_id_source("direct_chat")
+              .selected_text(direct_message_user.as_str())
+              .show_ui(ui, |ui| {
+                for (user, info) in direct_messages.0.iter() {
+                  ui.selectable_value(
+                    direct_message_user,
+                    user.to_string(),
+                    format!("{}{}", user, if info.last_viewed <= info.last_viewed { " *" } else { "" }),
+                  );
+                }
+              })
+              .changed()
+            {
+              for (mut selection, _) in player_names.iter_mut() {
+                selection.set_selected(false);
               }
-            });
+            }
             if ui.button("⊞").clicked() && new_chat.is_none() {
               *new_chat = Some(String::new());
             }
           });
           let mut info = direct_messages.0.get_mut(direct_message_user);
-          //TODO: check if player is in realm
-          if false {
-            ui.horizontal(|ui| {
-              ui.label("In this realm");
-              if ui.button("Join Them").clicked() {
-                server_requests.send(ServerRequest::Deliver(puzzleverse_core::ClientRequest::InRealm(
-                  puzzleverse_core::RealmRequest::FollowRequest { player: direct_message_user.clone() },
-                )));
-              }
-            });
-          } else {
-            ui.horizontal(|ui| {
-              match info.as_ref().map(|i| &i.location).unwrap_or(&puzzleverse_core::PlayerLocationState::Unknown) {
-                puzzleverse_core::PlayerLocationState::Invalid => (),
-                puzzleverse_core::PlayerLocationState::Unknown => {
-                  ui.label("Whereabouts unknown");
+          match player_names.iter_mut().filter(|(_, PlayerName(name))| name.as_str() == direct_message_user.as_str()).next() {
+            Some((mut selection, _)) => {
+              ui.horizontal(|ui| {
+                ui.label("In this realm");
+                if ui.button("Join Them").clicked() {
+                  server_requests.send(ServerRequest::Deliver(puzzleverse_core::ClientRequest::InRealm(
+                    puzzleverse_core::RealmRequest::FollowRequest { player: direct_message_user.clone() },
+                  )));
                 }
-                puzzleverse_core::PlayerLocationState::ServerDown => {
-                  ui.label("Player's server is offline");
-                }
-                puzzleverse_core::PlayerLocationState::Offline => {
-                  ui.label("Player is offline");
-                }
-                puzzleverse_core::PlayerLocationState::Online => {
-                  ui.label("Player is online");
-                }
-                puzzleverse_core::PlayerLocationState::InTransit => {
-                  ui.label("Player is in transit");
-                }
-                puzzleverse_core::PlayerLocationState::Realm(realm, server) => {
-                  ui.label("Player is in online");
-                  if ui.button("Join Them").clicked() {
-                    server_requests.send(ServerRequest::Deliver(puzzleverse_core::ClientRequest::RealmChange {
-                      realm: puzzleverse_core::RealmTarget::RemoteRealm { realm: realm.clone(), server: server.clone() },
-                    }));
+                selection.set_selected(true);
+              });
+            }
+            None => {
+              ui.horizontal(|ui| {
+                match info.as_ref().map(|i| &i.location).unwrap_or(&puzzleverse_core::PlayerLocationState::Unknown) {
+                  puzzleverse_core::PlayerLocationState::Invalid => (),
+                  puzzleverse_core::PlayerLocationState::Unknown => {
+                    ui.label("Whereabouts unknown");
                   }
+                  puzzleverse_core::PlayerLocationState::ServerDown => {
+                    ui.label("Player's server is offline");
+                  }
+                  puzzleverse_core::PlayerLocationState::Offline => {
+                    ui.label("Player is offline");
+                  }
+                  puzzleverse_core::PlayerLocationState::Online => {
+                    ui.label("Player is online");
+                  }
+                  puzzleverse_core::PlayerLocationState::InTransit => {
+                    ui.label("Player is in transit");
+                  }
+                  puzzleverse_core::PlayerLocationState::Realm(realm, server) => {
+                    ui.label("Player is in online");
+                    if ui.button("Join Them").clicked() {
+                      server_requests.send(ServerRequest::Deliver(puzzleverse_core::ClientRequest::RealmChange {
+                        realm: puzzleverse_core::RealmTarget::RemoteRealm { realm: realm.clone(), server: server.clone() },
+                      }));
+                    }
+                  }
+                };
+                if ui.button("Update").clicked() {
+                  server_requests.send(ServerRequest::Deliver(puzzleverse_core::ClientRequest::PlayerCheck(direct_message_user.clone())));
                 }
-              };
-              if ui.button("Update").clicked() {
-                server_requests.send(ServerRequest::Deliver(puzzleverse_core::ClientRequest::PlayerCheck(direct_message_user.clone())));
-              }
-            });
+              });
+            }
           }
           match info.as_deref_mut().filter(|l| !l.messages.is_empty()) {
             None => {
@@ -945,8 +982,27 @@ fn draw_ui(
           .anchor(bevy_egui::egui::Align2::CENTER_CENTER, [0.0, 0.0])
           .collapsible(false)
           .show(&ui, |ui| {
-            realm_selector.draw_ui(ui, known_realms, &mut server_requests, |realm| puzzleverse_core::ClientRequest::RealmChange { realm })
+            realm_selector.draw_ui(ui, &known_realms, &mut server_requests, |realm| puzzleverse_core::ClientRequest::RealmChange { realm })
           });
+      }
+      if let Some((path, point, realm_selector)) = clicked_realm_selector {
+        bevy_egui::egui::Window::new("Set Realm in Puzzle").anchor(bevy_egui::egui::Align2::CENTER_CENTER, [0.0, 0.0]).collapsible(false).show(
+          &ui,
+          |ui| {
+            realm_selector.draw_ui(ui, &known_realms, &mut server_requests, |realm| {
+              puzzleverse_core::ClientRequest::InRealm(puzzleverse_core::RealmRequest::Perform(
+                path
+                  .drain(..)
+                  .chain(std::iter::once(puzzleverse_core::Action::Interaction {
+                    target: point.clone(),
+                    interaction: puzzleverse_core::InteractionType::Realm(realm),
+                    stop_on_failure: true,
+                  }))
+                  .collect(),
+              ))
+            });
+          },
+        );
       }
       let mut close_new_chat = false;
       if let Some(new_chat) = new_chat {
@@ -1112,6 +1168,41 @@ fn draw_ui(
   window.set_mode(if fullscreen { bevy::window::WindowMode::BorderlessFullscreen } else { bevy::window::WindowMode::Windowed });
   if let Some(value) = next_ui {
     *screen = value;
+  }
+}
+
+fn mouse_event(
+  mut interaction_targets: bevy::ecs::system::Query<&InteractionTarget>,
+  mut picking_events: bevy::app::EventReader<bevy_mod_picking::PickingEvent>,
+  mut player_names: bevy::ecs::system::Query<&PlayerName>,
+  mut screen: bevy::ecs::system::ResMut<ScreenState>,
+  mut server_requests: bevy::app::EventWriter<ServerRequest>,
+) {
+  if let ScreenState::Realm { clicked_realm_selector, direct_message_user, .. } = &mut *screen {
+    for picking_event in picking_events.iter() {
+      if let bevy_mod_picking::PickingEvent::Selection(bevy_mod_picking::SelectionEvent::JustSelected(entity)) = picking_event {
+        if let Ok(PlayerName(name)) = player_names.get(*entity) {
+          direct_message_user.clear();
+          direct_message_user.push_str(&name);
+        } else if let Ok(&InteractionTarget { x, y, platform, click }) = interaction_targets.get(*entity) {
+          let mut actions = Vec::new();
+          todo!();
+          if click {
+            actions.push(puzzleverse_core::Action::Interaction {
+              target: puzzleverse_core::Point { x, y, platform },
+              interaction: puzzleverse_core::InteractionType::Click,
+              stop_on_failure: false,
+            });
+            server_requests.send(ServerRequest::Deliver(puzzleverse_core::ClientRequest::InRealm(puzzleverse_core::RealmRequest::Perform(actions))))
+          } else {
+            let mut old_selection = None;
+            std::mem::swap(&mut old_selection, &mut *clicked_realm_selector);
+            *clicked_realm_selector =
+              Some((actions, puzzleverse_core::Point { x, y, platform }, old_selection.map(|(_, _, state)| state).unwrap_or(RealmSelector::Player)));
+          }
+        }
+      }
+    }
   }
 }
 fn process_request(
