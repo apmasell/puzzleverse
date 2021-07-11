@@ -55,11 +55,12 @@ impl RealmPuzzleState {
     realm_owner: &str,
     target: usize,
     interaction: &puzzleverse_core::InteractionType,
+    player_server: &str,
     time: &chrono::DateTime<chrono::Utc>,
     train: Option<u16>,
   ) -> puzzleverse_core::InteractionResult {
     if let Some(piece) = self.pieces.get_mut(target) {
-      let (result, events) = piece.interact(interaction);
+      let (result, events) = piece.interact(interaction, player_server);
       let mut links = std::collections::HashMap::new();
       crate::puzzle::process(&mut *self, &mut links, events.into_iter().map(|event| crate::puzzle::Event::new(target, event)));
       for (p, rl) in links.iter() {
@@ -423,7 +424,18 @@ impl RealmState {
           for (player, interaction, at, time) in interactions.into_iter() {
             if !bad_interactions.contains_key(&player) {
               if let Some(piece_id) = state.manifold.interaction_target(&at) {
-                match state.interact(&s, &realm_owner, piece_id, &interaction, &now, train).await {
+                match state
+                  .interact(
+                    &s,
+                    &realm_owner,
+                    piece_id,
+                    &interaction,
+                    s.player_states.read().await.get(player.clone()).map(|p| p.server.as_ref()).flatten().unwrap_or(&s.name),
+                    &now,
+                    train,
+                  )
+                  .await
+                {
                   puzzleverse_core::InteractionResult::Invalid => eprintln!("Invalid interaction on puzzle piece {} in realm {}", piece_id, db_id),
                   puzzleverse_core::InteractionResult::Failed => {
                     bad_interactions.insert(player, time);

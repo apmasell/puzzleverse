@@ -158,7 +158,11 @@ pub(crate) trait PuzzlePiece: Send + Sync {
   /// Respond to a player interacting with this puzzle piece via the UI.
   ///
   /// Most puzzle pieces do not directly interact with players.
-  fn interact(self: &mut Self, interaction: &puzzleverse_core::InteractionType) -> (puzzleverse_core::InteractionResult, SimpleOutputEvents);
+  fn interact(
+    self: &mut Self,
+    interaction: &puzzleverse_core::InteractionType,
+    player_server: &str,
+  ) -> (puzzleverse_core::InteractionResult, SimpleOutputEvents);
   /// Write this puzzle piece out to a format that can be recovered later
   fn serialize(self: &Self, output: &mut OutputBuffer) -> SerializationResult;
   /// Generate any events trigger purely by time events

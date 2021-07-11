@@ -37,6 +37,7 @@ impl PuzzlePiece for Button {
   fn interact(
     self: &mut Self,
     interaction: &puzzleverse_core::InteractionType,
+    _: &str,
   ) -> (puzzleverse_core::InteractionResult, crate::puzzle::SimpleOutputEvents) {
     match interaction {
       puzzleverse_core::InteractionType::Click => {

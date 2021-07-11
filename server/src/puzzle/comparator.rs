@@ -110,7 +110,11 @@ where
       vec![]
     }
   }
-  fn interact(self: &mut Self, _: &puzzleverse_core::InteractionType) -> (puzzleverse_core::InteractionResult, crate::puzzle::SimpleOutputEvents) {
+  fn interact(
+    self: &mut Self,
+    _: &puzzleverse_core::InteractionType,
+    _: &str,
+  ) -> (puzzleverse_core::InteractionResult, crate::puzzle::SimpleOutputEvents) {
     (puzzleverse_core::InteractionResult::Invalid, vec![])
   }
 

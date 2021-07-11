@@ -458,7 +458,7 @@ pub enum InteractionType {
   /// The user swiped in the direction provided
   Swiped(Direction),
   /// The user selected a realm
-  Realm(String, String),
+  Realm(RealmTarget),
 }
 /// The data structure for performing a password-authenticated request
 #[derive(Serialize, Deserialize, Debug)]

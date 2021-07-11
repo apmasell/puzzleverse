@@ -53,6 +53,7 @@ impl PuzzlePiece for RadioButton {
   fn interact(
     self: &mut Self,
     interaction: &puzzleverse_core::InteractionType,
+    _: &str,
   ) -> (puzzleverse_core::InteractionResult, crate::puzzle::SimpleOutputEvents) {
     match interaction {
       puzzleverse_core::InteractionType::Choose(value) => {

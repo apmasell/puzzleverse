@@ -24,13 +24,19 @@ impl PuzzlePiece for RealmSelector {
   fn interact(
     self: &mut Self,
     interaction: &puzzleverse_core::InteractionType,
+    player_server: &str,
   ) -> (puzzleverse_core::InteractionResult, crate::puzzle::SimpleOutputEvents) {
-    if let puzzleverse_core::InteractionType::Realm(realm, server_name) = interaction {
+    if let puzzleverse_core::InteractionType::Realm(realm) = interaction {
       (
         puzzleverse_core::InteractionResult::Accepted,
         vec![(
           puzzleverse_core::PuzzleEvent::Changed,
-          crate::puzzle::PieceValue::Realm(crate::puzzle::RealmLink::Global(realm.clone(), server_name.clone())),
+          crate::puzzle::PieceValue::Realm(match realm {
+            puzzleverse_core::RealmTarget::Home => crate::puzzle::RealmLink::Home,
+            puzzleverse_core::RealmTarget::RemoteRealm { realm, server } => crate::puzzle::RealmLink::Global(realm.clone(), server.clone()),
+            puzzleverse_core::RealmTarget::PersonalRealm(asset) => crate::puzzle::RealmLink::Owner(asset.clone()),
+            puzzleverse_core::RealmTarget::LocalRealm(realm) => crate::puzzle::RealmLink::Global(realm.clone(), player_server.to_string()),
+          }),
         )],
       )
     } else {
