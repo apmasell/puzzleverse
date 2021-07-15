@@ -5,6 +5,7 @@ authors = ['Andre Masella <andre@masella.name>']
 edition = '2018'
 
 [dependencies]
+async-trait = '^0.1'
 gltf = '^0.15'
 rmp-serde = '^0.15'
 url = "^0.2"

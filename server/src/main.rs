@@ -1,3 +1,4 @@
+mod asset_store;
 mod auth;
 mod html;
 mod player_state;
@@ -194,7 +195,7 @@ struct RemoteConnectRequest {
 pub struct Server {
   access_acl: std::sync::Arc<tokio::sync::Mutex<crate::AccessControlSetting>>,
   admin_acl: std::sync::Arc<tokio::sync::Mutex<crate::AccessControlSetting>>,
-  asset_store: Box<dyn puzzleverse_core::asset_store::AssetStore>,
+  asset_store: Box<dyn puzzleverse_core::asset_store::AsyncAssetStore>,
   attempting_remote_contacts: tokio::sync::Mutex<std::collections::HashSet<String>>,
   /// The key to check JWT from users during authorization
   /// The authentication provider that can determine what users can get a JWT to log in
@@ -226,7 +227,7 @@ pub struct Server {
 
 #[derive(Serialize, Deserialize)]
 pub struct ServerConfiguration {
-  asset_store: String,
+  asset_store: asset_store::AssetStoreConfiguration,
   authentication: crate::auth::AuthConfiguration,
   bind_address: Option<String>,
   certificate: Option<std::path::PathBuf>,
@@ -558,7 +559,7 @@ impl Server {
   }
   async fn find_asset(self: &std::sync::Arc<Server>, id: &str, post_action: AssetPullAction) -> bool {
     let mut outstanding_assets = self.outstanding_assets.lock().await;
-    if self.asset_store.check(id) {
+    if self.asset_store.check(id).await {
       true
     } else {
       match outstanding_assets.entry(id.to_string()) {
@@ -2009,18 +2010,21 @@ impl Server {
                   }
                   principal_hash.update(chrono::Utc::now().to_rfc3339().as_bytes());
                   let principal = hex::encode(principal_hash.finalize());
-                  self.asset_store.push(
-                    &principal,
-                    &puzzleverse_core::asset::Asset {
-                      asset_type,
-                      author: format!("{}@{}", player_name, &self.name),
-                      children,
-                      data,
-                      licence,
-                      name,
-                      tags,
-                    },
-                  );
+                  self
+                    .asset_store
+                    .push(
+                      &principal,
+                      &puzzleverse_core::asset::Asset {
+                        asset_type,
+                        author: format!("{}@{}", player_name, &self.name),
+                        children,
+                        data,
+                        licence,
+                        name,
+                        tags,
+                      },
+                    )
+                    .await;
                   puzzleverse_core::ClientResponse::AssetCreationSucceeded { id, hash: principal }
                 }
                 None => puzzleverse_core::ClientResponse::AssetCreationFailed { id, error: puzzleverse_core::AssetError::Invalid },
@@ -2032,7 +2036,7 @@ impl Server {
             let mut retry = true;
             while retry {
               retry = false;
-              match self.asset_store.pull(&id) {
+              match self.asset_store.pull(&id).await {
                 puzzleverse_core::asset_store::LoadResult::Loaded(asset) => {
                   mutable_player_state.connection.send_local(puzzleverse_core::ClientResponse::Asset(id.clone(), asset)).await;
                 }
@@ -3293,7 +3297,7 @@ impl Server {
       RemoteMessage::AssetsPull { mut assets } => {
         let mut output = std::collections::HashMap::new();
         for asset in assets.drain(..) {
-          if let puzzleverse_core::asset_store::LoadResult::Loaded(value) = self.asset_store.pull(&asset) {
+          if let puzzleverse_core::asset_store::LoadResult::Loaded(value) = self.asset_store.pull(&asset).await {
             output.insert(asset, value);
           }
         }
@@ -3308,8 +3312,8 @@ impl Server {
         {
           let mut outstanding_assets = self.outstanding_assets.lock().await;
           for (asset, value) in assets.drain() {
-            if !self.asset_store.check(&asset) {
-              self.asset_store.push(&asset, &value);
+            if !self.asset_store.check(&asset).await {
+              self.asset_store.push(&asset, &value).await;
             }
             if let Some(mut actions) = outstanding_assets.remove(&asset) {
               post_insert_actions.extend(actions.drain(..).map(|action| (asset.clone(), value.clone(), action)));
@@ -3327,10 +3331,15 @@ impl Server {
               self.add_train(&asset_name, allowed_first).await;
             }
             AssetPullAction::LoadRealm(realm, counter) => {
-              let missing_children: Vec<_> = asset_value.children.iter().filter(|ca| !self.asset_store.check(ca)).collect();
+              let mut missing_children = Vec::new();
+              for ca in asset_value.children {
+                if self.asset_store.missing(&ca).await {
+                  missing_children.push(ca);
+                }
+              }
               counter.fetch_add(missing_children.len(), std::sync::atomic::Ordering::Relaxed);
               for missing_child in missing_children {
-                if self.find_asset(missing_child, AssetPullAction::LoadRealm(realm.clone(), counter.clone())).await {
+                if self.find_asset(&missing_child, AssetPullAction::LoadRealm(realm.clone(), counter.clone())).await {
                   if counter.fetch_sub(1, std::sync::atomic::Ordering::Relaxed) <= 1 {
                     panic!("Invalid reference count for realm asset tracker");
                   }
@@ -3560,7 +3569,12 @@ impl Server {
         }
       }
       RemoteMessage::VisitorCheckAssets { player, assets } => {
-        let missing_assets: Vec<_> = assets.iter().filter(|a| !self.asset_store.check(a)).cloned().collect();
+        let mut missing_assets = Vec::new();
+        for a in assets.iter() {
+          if self.asset_store.missing(a).await {
+            missing_assets.push(a.clone());
+          }
+        }
         if missing_assets.len() > 0 {
           if let Some(remote_state) = self.remote_states.read().await.get(remote_id.clone()) {
             remote_state.connection.lock().await.send(RemoteMessage::AssetsPull { assets: missing_assets }).await;
@@ -3865,10 +3879,7 @@ async fn start() -> Result<(), Box<dyn std::error::Error>> {
   let (asset_sender, asset_receiver) = tokio::sync::mpsc::channel(100);
   let jwt_secret = rand::thread_rng().gen::<[u8; 32]>();
   let server = std::sync::Arc::new(Server {
-    asset_store: Box::new(puzzleverse_core::asset_store::FileSystemStore::new(
-      std::path::Path::new(&configuration.asset_store).to_owned(),
-      [4, 4, 8].iter().cloned(),
-    )),
+    asset_store: configuration.asset_store.load(),
     outstanding_assets: tokio::sync::Mutex::new(std::collections::HashMap::new()),
     push_assets: tokio::sync::Mutex::new(asset_sender),
     authentication: configuration.authentication.load().await.unwrap(),
@@ -4008,7 +4019,7 @@ fn start_asset_puller_task(server: &std::sync::Arc<Server>, mut asset_receiver: 
         Some((player, asset)) => match s.upgrade() {
           None => break,
           Some(server) => {
-            match server.asset_store.pull(&asset) {
+            match server.asset_store.pull(&asset).await {
               puzzleverse_core::asset_store::LoadResult::Loaded(loaded) => match server.player_states.read().await.get(player) {
                 Some(player_state) => {
                   player_state

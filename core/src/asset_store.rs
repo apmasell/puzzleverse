@@ -8,6 +8,19 @@ pub trait AssetStore: Send + Sync {
   fn push(&self, asset: &str, value: &crate::asset::Asset);
 }
 
+#[async_trait::async_trait]
+pub trait AsyncAssetStore: Send + Sync {
+  /// Determine if the asset ID provided is available
+  async fn check(&self, asset: &str) -> bool;
+  async fn missing(&self, asset: &str) -> bool {
+    !self.check(asset).await
+  }
+  /// Retrieve an asset from the store
+  async fn pull(&self, asset: &str) -> LoadResult;
+  /// Store a new asset in the store
+  async fn push(&self, asset: &str, value: &crate::asset::Asset);
+}
+
 /// The type of result when attempting to pull an asset from the store
 pub enum LoadResult {
   /// The asset was found, but cannot be decoded
@@ -79,5 +92,20 @@ impl<T: AsRef<std::path::Path> + Send + Sync> AssetStore for FileSystemStore<T> 
     let path = self.get_path(asset);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     rmp_serde::encode::write(&mut std::fs::OpenOptions::new().write(true).open(&path).unwrap(), value).unwrap();
+  }
+}
+
+#[async_trait::async_trait]
+impl<T: AssetStore> AsyncAssetStore for T {
+  async fn check(&self, asset: &str) -> bool {
+    <T as AssetStore>::check(self, asset)
+  }
+
+  async fn pull(&self, asset: &str) -> LoadResult {
+    <T as AssetStore>::pull(self, asset)
+  }
+
+  async fn push(&self, asset: &str, value: &crate::asset::Asset) {
+    <T as AssetStore>::push(self, asset, value)
   }
 }
